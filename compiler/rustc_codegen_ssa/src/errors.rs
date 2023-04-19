@@ -405,8 +405,8 @@ pub struct MsvcMissingLinker;
 pub struct CheckInstalledVisualStudio;
 
 #[derive(Diagnostic)]
-#[diag(codegen_ssa_unsufficient_vs_code_product)]
-pub struct UnsufficientVSCodeProduct;
+#[diag(codegen_ssa_insufficient_vs_code_product)]
+pub struct InsufficientVSCodeProduct;
 
 #[derive(Diagnostic)]
 #[diag(codegen_ssa_processing_dymutil_failed)]
@@ -424,7 +424,7 @@ pub struct UnableToRunDsymutil {
 }
 
 #[derive(Diagnostic)]
-#[diag(codegen_ssa_stripping_debu_info_failed)]
+#[diag(codegen_ssa_stripping_debug_info_failed)]
 #[note]
 pub struct StrippingDebugInfoFailed<'a> {
     pub util: &'a str,

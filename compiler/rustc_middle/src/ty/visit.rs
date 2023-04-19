@@ -33,6 +33,14 @@ pub trait TypeVisitableExt<'tcx>: TypeVisitable<TyCtxt<'tcx>> {
     }
 
     fn has_type_flags(&self, flags: TypeFlags) -> bool {
+        // N.B. Even though this uses a visitor, the visitor does not actually
+        //      recurse through the whole `TypeVisitable` implementor type.
+        //
+        //      Instead it stops on the first "level", visiting types, regions,
+        //      consts and predicates just fetches their type flags.
+        //
+        //      Thus this is a lot faster than it might seem and should be
+        //      optimized to a simple field access.
         let res =
             self.visit_with(&mut HasTypeFlagsVisitor { flags }).break_value() == Some(FoundFlags);
         trace!(?self, ?flags, ?res, "has_type_flags");
@@ -82,6 +90,9 @@ pub trait TypeVisitableExt<'tcx>: TypeVisitable<TyCtxt<'tcx>> {
                 | TypeFlags::HAS_TY_PLACEHOLDER
                 | TypeFlags::HAS_CT_PLACEHOLDER,
         )
+    }
+    fn has_non_region_placeholders(&self) -> bool {
+        self.has_type_flags(TypeFlags::HAS_TY_PLACEHOLDER | TypeFlags::HAS_CT_PLACEHOLDER)
     }
     fn needs_subst(&self) -> bool {
         self.has_type_flags(TypeFlags::NEEDS_SUBST)
@@ -361,7 +372,7 @@ impl<'tcx> TypeVisitor<TyCtxt<'tcx>> for ValidateBoundVars<'tcx> {
             _ => (),
         };
 
-        r.super_visit_with(self)
+        ControlFlow::Continue(())
     }
 }
 

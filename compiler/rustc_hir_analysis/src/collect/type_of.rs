@@ -8,10 +8,7 @@ use rustc_middle::hir::nested_filter;
 use rustc_middle::ty::print::with_forced_trimmed_paths;
 use rustc_middle::ty::subst::InternalSubsts;
 use rustc_middle::ty::util::IntTypeExt;
-use rustc_middle::ty::{
-    self, ImplTraitInTraitData, IsSuggestable, Ty, TyCtxt, TypeFolder, TypeSuperFoldable,
-    TypeVisitableExt,
-};
+use rustc_middle::ty::{self, ImplTraitInTraitData, IsSuggestable, Ty, TyCtxt, TypeVisitableExt};
 use rustc_span::symbol::Ident;
 use rustc_span::{Span, DUMMY_SP};
 
@@ -254,7 +251,7 @@ pub(super) fn type_of(tcx: TyCtxt<'_>, def_id: LocalDefId) -> ty::EarlyBinder<Ty
         match tcx.collect_return_position_impl_trait_in_trait_tys(fn_def_id) {
             Ok(map) => {
                 let assoc_item = tcx.associated_item(def_id);
-                return ty::EarlyBinder(map[&assoc_item.trait_item_def_id.unwrap()]);
+                return map[&assoc_item.trait_item_def_id.unwrap()];
             }
             Err(_) => {
                 return ty::EarlyBinder(tcx.ty_error_with_message(
@@ -874,28 +871,6 @@ fn infer_placeholder_type<'a>(
     item_ident: Ident,
     kind: &'static str,
 ) -> Ty<'a> {
-    // Attempts to make the type nameable by turning FnDefs into FnPtrs.
-    struct MakeNameable<'tcx> {
-        tcx: TyCtxt<'tcx>,
-    }
-
-    impl<'tcx> TypeFolder<TyCtxt<'tcx>> for MakeNameable<'tcx> {
-        fn interner(&self) -> TyCtxt<'tcx> {
-            self.tcx
-        }
-
-        fn fold_ty(&mut self, ty: Ty<'tcx>) -> Ty<'tcx> {
-            let ty = match *ty.kind() {
-                ty::FnDef(def_id, substs) => {
-                    self.tcx.mk_fn_ptr(self.tcx.fn_sig(def_id).subst(self.tcx, substs))
-                }
-                _ => ty,
-            };
-
-            ty.super_fold_with(self)
-        }
-    }
-
     let ty = tcx.diagnostic_only_typeck(def_id).node_type(body_id.hir_id);
 
     // If this came from a free `const` or `static mut?` item,

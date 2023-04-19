@@ -402,7 +402,7 @@ fn collect_roots(tcx: TyCtxt<'_>, mode: MonoItemCollectionMode) -> Vec<MonoItem<
 }
 
 /// Collect all monomorphized items reachable from `starting_point`, and emit a note diagnostic if a
-/// post-monorphization error is encountered during a collection step.
+/// post-monomorphization error is encountered during a collection step.
 #[instrument(skip(tcx, visited, recursion_depths, recursion_limit, inlining_map), level = "debug")]
 fn collect_items_rec<'tcx>(
     tcx: TyCtxt<'tcx>,
@@ -852,7 +852,7 @@ impl<'a, 'tcx> MirVisitor<'tcx> for MirNeighborCollector<'a, 'tcx> {
                     self.output.push(create_fn_mono_item(tcx, instance, source));
                 }
             }
-            mir::TerminatorKind::Abort { .. } => {
+            mir::TerminatorKind::Terminate { .. } => {
                 let instance = Instance::mono(
                     tcx,
                     tcx.require_lang_item(LangItem::PanicCannotUnwind, Some(source)),
@@ -870,6 +870,16 @@ impl<'a, 'tcx> MirVisitor<'tcx> for MirNeighborCollector<'a, 'tcx> {
             | mir::TerminatorKind::Yield { .. }
             | mir::TerminatorKind::FalseEdge { .. }
             | mir::TerminatorKind::FalseUnwind { .. } => bug!(),
+        }
+
+        if let Some(mir::UnwindAction::Terminate) = terminator.unwind() {
+            let instance = Instance::mono(
+                tcx,
+                tcx.require_lang_item(LangItem::PanicCannotUnwind, Some(source)),
+            );
+            if should_codegen_locally(tcx, &instance) {
+                self.output.push(create_fn_mono_item(tcx, instance, source));
+            }
         }
 
         self.super_terminator(terminator, location);

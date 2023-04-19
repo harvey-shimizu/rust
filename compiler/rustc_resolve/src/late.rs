@@ -122,6 +122,12 @@ pub(crate) enum ConstantItemKind {
     Static,
 }
 
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+enum RecordPartialRes {
+    Yes,
+    No,
+}
+
 /// The rib kind restricts certain accesses,
 /// e.g. to a `Res::Local` of an outer item.
 #[derive(Copy, Clone, Debug)]
@@ -592,7 +598,7 @@ struct LateResolutionVisitor<'a, 'b, 'ast, 'tcx> {
     /// The current set of local scopes for types and values.
     ribs: PerNS<Vec<Rib<'a>>>,
 
-    /// Previous poped `rib`, only used for diagnostic.
+    /// Previous popped `rib`, only used for diagnostic.
     last_block_rib: Option<Rib<'a>>,
 
     /// The current set of local scopes, for labels.
@@ -1073,7 +1079,7 @@ impl<'a: 'ast, 'ast, 'tcx> Visitor<'ast> for LateResolutionVisitor<'a, '_, 'ast,
                     for rib in self.lifetime_ribs.iter().rev() {
                         match rib.kind {
                             // We are inside a `PolyTraitRef`. The lifetimes are
-                            // to be intoduced in that (maybe implicit) `for<>` binder.
+                            // to be introduced in that (maybe implicit) `for<>` binder.
                             LifetimeRibKind::Generics {
                                 binder,
                                 kind: LifetimeBinderKind::PolyTrait,
@@ -1110,7 +1116,6 @@ impl<'a: 'ast, 'ast, 'tcx> Visitor<'ast> for LateResolutionVisitor<'a, '_, 'ast,
                         }
                     }
                 }
-                GenericArgs::ReturnTypeNotation(_span) => {}
             }
         }
     }
@@ -1218,7 +1223,7 @@ impl<'a: 'ast, 'b, 'ast, 'tcx> LateResolutionVisitor<'a, 'b, 'ast, 'tcx> {
             lifetime_ribs: Vec::new(),
             lifetime_elision_candidates: None,
             current_trait_ref: None,
-            diagnostic_metadata: Box::new(DiagnosticMetadata::default()),
+            diagnostic_metadata: Default::default(),
             // errors at module scope should always be reported
             in_func_body: false,
             lifetime_uses: Default::default(),
@@ -2682,6 +2687,7 @@ impl<'a: 'ast, 'b, 'ast, 'tcx> LateResolutionVisitor<'a, 'b, 'ast, 'tcx> {
                 &path,
                 PathSource::Trait(AliasPossibility::No),
                 Finalize::new(trait_ref.ref_id, trait_ref.path.span),
+                RecordPartialRes::Yes,
             );
             self.diagnostic_metadata.currently_processing_impl_trait = None;
             if let Some(def_id) = res.expect_full_res().opt_def_id() {
@@ -3420,6 +3426,7 @@ impl<'a: 'ast, 'b, 'ast, 'tcx> LateResolutionVisitor<'a, 'b, 'ast, 'tcx> {
             &Segment::from_path(path),
             source,
             Finalize::new(id, path.span),
+            RecordPartialRes::Yes,
         );
     }
 
@@ -3430,6 +3437,7 @@ impl<'a: 'ast, 'b, 'ast, 'tcx> LateResolutionVisitor<'a, 'b, 'ast, 'tcx> {
         path: &[Segment],
         source: PathSource<'ast>,
         finalize: Finalize,
+        record_partial_res: RecordPartialRes,
     ) -> PartialRes {
         let ns = source.namespace();
 
@@ -3458,8 +3466,8 @@ impl<'a: 'ast, 'b, 'ast, 'tcx> LateResolutionVisitor<'a, 'b, 'ast, 'tcx> {
                         sugg.to_string(),
                         Applicability::MaybeIncorrect,
                     ))
-                } else if res.is_none() && matches!(source, PathSource::Type) {
-                    this.report_missing_type_error(path)
+                } else if res.is_none() && let PathSource::Type | PathSource::Expr(_) = source {
+                    this.suggest_adding_generic_parameter(path, source)
                 } else {
                     None
                 };
@@ -3636,7 +3644,7 @@ impl<'a: 'ast, 'b, 'ast, 'tcx> LateResolutionVisitor<'a, 'b, 'ast, 'tcx> {
             _ => report_errors(self, None),
         };
 
-        if !matches!(source, PathSource::TraitItem(..)) {
+        if record_partial_res == RecordPartialRes::Yes {
             // Avoid recording definition of `A::B` in `<T as A>::B::C`.
             self.r.record_partial_res(node_id, partial_res);
             self.resolve_elided_lifetimes_in_path(node_id, partial_res, path, source, path_span);
@@ -3740,7 +3748,25 @@ impl<'a: 'ast, 'b, 'ast, 'tcx> LateResolutionVisitor<'a, 'b, 'ast, 'tcx> {
                 )));
             }
 
-            // Make sure `A::B` in `<T as A::B>::C` is a trait item.
+            let num_privacy_errors = self.r.privacy_errors.len();
+            // Make sure that `A` in `<T as A>::B::C` is a trait.
+            let trait_res = self.smart_resolve_path_fragment(
+                &None,
+                &path[..qself.position],
+                PathSource::Trait(AliasPossibility::No),
+                Finalize::new(finalize.node_id, qself.path_span),
+                RecordPartialRes::No,
+            );
+
+            if trait_res.expect_full_res() == Res::Err {
+                return Ok(Some(trait_res));
+            }
+
+            // Truncate additional privacy errors reported above,
+            // because they'll be recomputed below.
+            self.r.privacy_errors.truncate(num_privacy_errors);
+
+            // Make sure `A::B` in `<T as A>::B::C` is a trait item.
             //
             // Currently, `path` names the full item (`A::B::C`, in
             // our example). so we extract the prefix of that that is
@@ -3753,6 +3779,7 @@ impl<'a: 'ast, 'b, 'ast, 'tcx> LateResolutionVisitor<'a, 'b, 'ast, 'tcx> {
                 &path[..=qself.position],
                 PathSource::TraitItem(ns),
                 Finalize::with_root_span(finalize.node_id, finalize.path_span, qself.path_span),
+                RecordPartialRes::No,
             );
 
             // The remaining segments (the `C` in our example) will
@@ -3776,7 +3803,7 @@ impl<'a: 'ast, 'b, 'ast, 'tcx> LateResolutionVisitor<'a, 'b, 'ast, 'tcx> {
             // use std::u8; // bring module u8 in scope
             // fn f() -> u8 { // OK, resolves to primitive u8, not to std::u8
             //     u8::max_value() // OK, resolves to associated function <u8>::max_value,
-            //                     // not to non-existent std::u8::max_value
+            //                     // not to nonexistent std::u8::max_value
             // }
             //
             // Such behavior is required for backward compatibility.

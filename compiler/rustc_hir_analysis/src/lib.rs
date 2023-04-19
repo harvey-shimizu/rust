@@ -70,7 +70,6 @@ This API is completely unstable and subject to change.
 #![feature(lazy_cell)]
 #![feature(slice_partition_dedup)]
 #![feature(try_blocks)]
-#![feature(is_some_and)]
 #![feature(type_alias_impl_trait)]
 #![recursion_limit = "256"]
 
@@ -100,10 +99,10 @@ mod variance;
 
 use rustc_errors::ErrorGuaranteed;
 use rustc_errors::{DiagnosticMessage, SubdiagnosticMessage};
+use rustc_fluent_macro::fluent_messages;
 use rustc_hir as hir;
 use rustc_hir::Node;
 use rustc_infer::infer::TyCtxtInferExt;
-use rustc_macros::fluent_messages;
 use rustc_middle::middle;
 use rustc_middle::ty::query::Providers;
 use rustc_middle::ty::{self, Ty, TyCtxt};

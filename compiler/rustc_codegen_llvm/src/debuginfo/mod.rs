@@ -21,6 +21,7 @@ use rustc_codegen_ssa::debuginfo::type_names;
 use rustc_codegen_ssa::mir::debuginfo::{DebugScope, FunctionDebugContext, VariableKind};
 use rustc_codegen_ssa::traits::*;
 use rustc_data_structures::fx::FxHashMap;
+use rustc_data_structures::stable_hasher::Hash128;
 use rustc_data_structures::sync::Lrc;
 use rustc_hir::def_id::{DefId, DefIdMap};
 use rustc_index::vec::IndexVec;
@@ -61,7 +62,7 @@ pub struct CodegenUnitDebugContext<'ll, 'tcx> {
     llcontext: &'ll llvm::Context,
     llmod: &'ll llvm::Module,
     builder: &'ll mut DIBuilder<'ll>,
-    created_files: RefCell<FxHashMap<Option<(u128, SourceFileHash)>, &'ll DIFile>>,
+    created_files: RefCell<FxHashMap<Option<(Hash128, SourceFileHash)>, &'ll DIFile>>,
 
     type_map: metadata::TypeMap<'ll, 'tcx>,
     namespace_map: RefCell<DefIdMap<&'ll DIScope>>,
@@ -209,8 +210,7 @@ impl<'ll> DebugInfoBuilderMethods for Builder<'_, 'll, '_> {
 
     fn set_dbg_loc(&mut self, dbg_loc: &'ll DILocation) {
         unsafe {
-            let dbg_loc_as_llval = llvm::LLVMRustMetadataAsValue(self.cx().llcx, dbg_loc);
-            llvm::LLVMSetCurrentDebugLocation(self.llbuilder, dbg_loc_as_llval);
+            llvm::LLVMSetCurrentDebugLocation2(self.llbuilder, dbg_loc);
         }
     }
 

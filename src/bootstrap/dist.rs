@@ -895,6 +895,8 @@ impl Step for Src {
 
     /// Creates the `rust-src` installer component
     fn run(self, builder: &Builder<'_>) -> GeneratedTarball {
+        builder.update_submodule(&Path::new("src/llvm-project"));
+
         let tarball = Tarball::new_targetless(builder, "rust-src");
 
         // A lot of tools expect the rust-src component to be entirely in this directory, so if you
@@ -994,11 +996,14 @@ impl Step for PlainSourceTarball {
         // If we're building from git sources, we need to vendor a complete distribution.
         if builder.rust_info().is_managed_git_subrepository() {
             // Ensure we have the submodules checked out.
+            builder.update_submodule(Path::new("src/tools/cargo"));
             builder.update_submodule(Path::new("src/tools/rust-analyzer"));
 
             // Vendor all Cargo dependencies
             let mut cmd = Command::new(&builder.initial_cargo);
             cmd.arg("vendor")
+                .arg("--sync")
+                .arg(builder.src.join("./src/tools/cargo/Cargo.toml"))
                 .arg("--sync")
                 .arg(builder.src.join("./src/tools/rust-analyzer/Cargo.toml"))
                 .arg("--sync")
@@ -1488,7 +1493,7 @@ impl Step for Extended {
 
         let xform = |p: &Path| {
             let mut contents = t!(fs::read_to_string(p));
-            for tool in &["rust-demangler", "miri"] {
+            for tool in &["rust-demangler", "miri", "rust-docs"] {
                 if !built_tools.contains(tool) {
                     contents = filter(&contents, tool);
                 }
@@ -1585,11 +1590,10 @@ impl Step for Extended {
             prepare("rustc");
             prepare("cargo");
             prepare("rust-analysis");
-            prepare("rust-docs");
             prepare("rust-std");
             prepare("clippy");
             prepare("rust-analyzer");
-            for tool in &["rust-demangler", "miri"] {
+            for tool in &["rust-docs", "rust-demangler", "miri"] {
                 if built_tools.contains(tool) {
                     prepare(tool);
                 }
@@ -1624,23 +1628,25 @@ impl Step for Extended {
                     .arg("-out")
                     .arg(exe.join("RustcGroup.wxs")),
             );
-            builder.run(
-                Command::new(&heat)
-                    .current_dir(&exe)
-                    .arg("dir")
-                    .arg("rust-docs")
-                    .args(&heat_flags)
-                    .arg("-cg")
-                    .arg("DocsGroup")
-                    .arg("-dr")
-                    .arg("Docs")
-                    .arg("-var")
-                    .arg("var.DocsDir")
-                    .arg("-out")
-                    .arg(exe.join("DocsGroup.wxs"))
-                    .arg("-t")
-                    .arg(etc.join("msi/squash-components.xsl")),
-            );
+            if built_tools.contains("rust-docs") {
+                builder.run(
+                    Command::new(&heat)
+                        .current_dir(&exe)
+                        .arg("dir")
+                        .arg("rust-docs")
+                        .args(&heat_flags)
+                        .arg("-cg")
+                        .arg("DocsGroup")
+                        .arg("-dr")
+                        .arg("Docs")
+                        .arg("-var")
+                        .arg("var.DocsDir")
+                        .arg("-out")
+                        .arg(exe.join("DocsGroup.wxs"))
+                        .arg("-t")
+                        .arg(etc.join("msi/squash-components.xsl")),
+                );
+            }
             builder.run(
                 Command::new(&heat)
                     .current_dir(&exe)
@@ -1787,7 +1793,6 @@ impl Step for Extended {
                 cmd.current_dir(&exe)
                     .arg("-nologo")
                     .arg("-dRustcDir=rustc")
-                    .arg("-dDocsDir=rust-docs")
                     .arg("-dCargoDir=cargo")
                     .arg("-dStdDir=rust-std")
                     .arg("-dAnalysisDir=rust-analysis")
@@ -1799,6 +1804,9 @@ impl Step for Extended {
                     .arg(&input);
                 add_env(builder, &mut cmd, target);
 
+                if built_tools.contains("rust-docs") {
+                    cmd.arg("-dDocsDir=rust-docs");
+                }
                 if built_tools.contains("rust-demangler") {
                     cmd.arg("-dRustDemanglerDir=rust-demangler");
                 }
@@ -1817,7 +1825,9 @@ impl Step for Extended {
             candle(&etc.join("msi/ui.wxs"));
             candle(&etc.join("msi/rustwelcomedlg.wxs"));
             candle("RustcGroup.wxs".as_ref());
-            candle("DocsGroup.wxs".as_ref());
+            if built_tools.contains("rust-docs") {
+                candle("DocsGroup.wxs".as_ref());
+            }
             candle("CargoGroup.wxs".as_ref());
             candle("StdGroup.wxs".as_ref());
             candle("ClippyGroup.wxs".as_ref());
@@ -1854,7 +1864,6 @@ impl Step for Extended {
                 .arg("ui.wixobj")
                 .arg("rustwelcomedlg.wixobj")
                 .arg("RustcGroup.wixobj")
-                .arg("DocsGroup.wixobj")
                 .arg("CargoGroup.wixobj")
                 .arg("StdGroup.wixobj")
                 .arg("AnalysisGroup.wixobj")
@@ -1869,6 +1878,9 @@ impl Step for Extended {
             }
             if built_tools.contains("rust-demangler") {
                 cmd.arg("RustDemanglerGroup.wixobj");
+            }
+            if built_tools.contains("rust-docs") {
+                cmd.arg("DocsGroup.wixobj");
             }
 
             if target.ends_with("windows-gnu") {
@@ -1951,6 +1963,20 @@ fn maybe_install_llvm(builder: &Builder<'_>, target: TargetSelection, dst_libdir
             // still want to install it, as it otherwise won't be available.
             return false;
         }
+    }
+
+    // FIXME: for reasons I don't understand, the LLVM so in the `rustc` component is different than the one in `rust-dev`.
+    // Only the one in `rustc` works with the downloaded compiler.
+    if builder.download_rustc() && target == builder.build.build {
+        let src_libdir = builder.ci_rustc_dir(target).join("lib");
+        for entry in t!(std::fs::read_dir(&src_libdir)) {
+            let entry = t!(entry);
+            if entry.file_name().to_str().unwrap().starts_with("libLLVM-") {
+                install_llvm_file(builder, &entry.path(), dst_libdir);
+                return !builder.config.dry_run();
+            }
+        }
+        panic!("libLLVM.so not found in src_libdir {}!", src_libdir.display());
     }
 
     // On macOS, rustc (and LLVM tools) link to an unversioned libLLVM.dylib

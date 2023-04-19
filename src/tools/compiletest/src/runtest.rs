@@ -310,7 +310,9 @@ impl<'test> TestCx<'test> {
                 );
             }
 
-            self.check_correct_failure_status(proc_res);
+            if !self.props.dont_check_failure_status {
+                self.check_correct_failure_status(proc_res);
+            }
         }
     }
 
@@ -1568,7 +1570,7 @@ impl<'test> TestCx<'test> {
             rustdoc.arg("--output-format").arg("json").arg("-Zunstable-options");
         }
 
-        if let Some(ref linker) = self.config.linker {
+        if let Some(ref linker) = self.config.target_linker {
             rustdoc.arg(format!("-Clinker={}", linker));
         }
 
@@ -1898,6 +1900,9 @@ impl<'test> TestCx<'test> {
         // Use a single thread for efficiency and a deterministic error message order
         rustc.arg("-Zthreads=1");
 
+        // In stage 0, make sure we use `stage0-sysroot` instead of the bootstrap sysroot.
+        rustc.arg("--sysroot").arg(&self.config.sysroot_base);
+
         // Optionally prevent default --target if specified in test compile-flags.
         let custom_target = self.props.compile_flags.iter().any(|x| x.starts_with("--target"));
 
@@ -2081,10 +2086,15 @@ impl<'test> TestCx<'test> {
 
         if self.props.force_host {
             self.maybe_add_external_args(&mut rustc, &self.config.host_rustcflags);
+            if !is_rustdoc {
+                if let Some(ref linker) = self.config.host_linker {
+                    rustc.arg(format!("-Clinker={}", linker));
+                }
+            }
         } else {
             self.maybe_add_external_args(&mut rustc, &self.config.target_rustcflags);
             if !is_rustdoc {
-                if let Some(ref linker) = self.config.linker {
+                if let Some(ref linker) = self.config.target_linker {
                     rustc.arg(format!("-Clinker={}", linker));
                 }
             }
@@ -2133,7 +2143,7 @@ impl<'test> TestCx<'test> {
             if let Some(ref p) = self.config.nodejs {
                 args.push(p.clone());
             } else {
-                self.fatal("no NodeJS binary found (--nodejs)");
+                self.fatal("emscripten target requested and no NodeJS binary found (--nodejs)");
             }
         // If this is otherwise wasm, then run tests under nodejs with our
         // shim
@@ -2141,7 +2151,7 @@ impl<'test> TestCx<'test> {
             if let Some(ref p) = self.config.nodejs {
                 args.push(p.clone());
             } else {
-                self.fatal("no NodeJS binary found (--nodejs)");
+                self.fatal("wasm32 target requested and no NodeJS binary found (--nodejs)");
             }
 
             let src = self
@@ -2997,6 +3007,7 @@ impl<'test> TestCx<'test> {
             || host.contains("freebsd")
             || host.contains("netbsd")
             || host.contains("openbsd")
+            || host.contains("aix")
         {
             "gmake"
         } else {
@@ -3036,7 +3047,7 @@ impl<'test> TestCx<'test> {
             cmd.env("NODE", node);
         }
 
-        if let Some(ref linker) = self.config.linker {
+        if let Some(ref linker) = self.config.target_linker {
             cmd.env("RUSTC_LINKER", linker);
         }
 

@@ -304,6 +304,7 @@ def default_build_triple(verbose):
         'i486': 'i686',
         'i686': 'i686',
         'i786': 'i686',
+        'loongarch64': 'loongarch64',
         'm68k': 'm68k',
         'powerpc': 'powerpc',
         'powerpc64': 'powerpc64',
@@ -821,7 +822,8 @@ class RustBuild(object):
         if self.use_vendored_sources:
             vendor_dir = os.path.join(self.rust_root, 'vendor')
             if not os.path.exists(vendor_dir):
-                sync_dirs = "--sync ./src/tools/rust-analyzer/Cargo.toml " \
+                sync_dirs = "--sync ./src/tools/cargo/Cargo.toml " \
+                            "--sync ./src/tools/rust-analyzer/Cargo.toml " \
                             "--sync ./compiler/rustc_codegen_cranelift/Cargo.toml " \
                             "--sync ./src/bootstrap/Cargo.toml "
                 print('error: vendoring required, but vendor directory does not exist.')

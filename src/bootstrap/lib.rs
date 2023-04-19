@@ -58,6 +58,7 @@ mod render_tests;
 mod run;
 mod sanity;
 mod setup;
+mod suggest;
 mod tarball;
 mod test;
 mod tool;
@@ -129,7 +130,8 @@ const EXTRA_CHECK_CFGS: &[(Option<Mode>, &'static str, Option<&[&'static str]>)]
     /* Extra values not defined in the built-in targets yet, but used in std */
     (Some(Mode::Std), "target_env", Some(&["libnx"])),
     // (Some(Mode::Std), "target_os", Some(&[])),
-    (Some(Mode::Std), "target_arch", Some(&["asmjs", "spirv", "nvptx", "xtensa"])),
+    // #[cfg(bootstrap)] loongarch64
+    (Some(Mode::Std), "target_arch", Some(&["asmjs", "spirv", "nvptx", "xtensa", "loongarch64"])),
     /* Extra names used by dependencies */
     // FIXME: Used by serde_json, but we should not be triggering on external dependencies.
     (Some(Mode::Rustc), "no_btreemap_remove_entry", None),
@@ -189,6 +191,7 @@ pub enum GitRepo {
 /// although most functions are implemented as free functions rather than
 /// methods specifically on this structure itself (to make it easier to
 /// organize).
+#[cfg_attr(not(feature = "build-metrics"), derive(Clone))]
 pub struct Build {
     /// User-specified configuration from `config.toml`.
     config: Config,
@@ -235,14 +238,12 @@ pub struct Build {
     ci_env: CiEnv,
     delayed_failures: RefCell<Vec<String>>,
     prerelease_version: Cell<Option<u32>>,
-    tool_artifacts:
-        RefCell<HashMap<TargetSelection, HashMap<String, (&'static str, PathBuf, Vec<String>)>>>,
 
     #[cfg(feature = "build-metrics")]
     metrics: metrics::BuildMetrics,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct Crate {
     name: Interned<String>,
     deps: HashSet<Interned<String>>,
@@ -358,14 +359,14 @@ impl Build {
         #[cfg(not(unix))]
         let is_sudo = false;
 
-        let ignore_git = config.ignore_git;
-        let rust_info = channel::GitInfo::new(ignore_git, &src);
-        let cargo_info = channel::GitInfo::new(ignore_git, &src.join("src/tools/cargo"));
+        let omit_git_hash = config.omit_git_hash;
+        let rust_info = channel::GitInfo::new(omit_git_hash, &src);
+        let cargo_info = channel::GitInfo::new(omit_git_hash, &src.join("src/tools/cargo"));
         let rust_analyzer_info =
-            channel::GitInfo::new(ignore_git, &src.join("src/tools/rust-analyzer"));
-        let clippy_info = channel::GitInfo::new(ignore_git, &src.join("src/tools/clippy"));
-        let miri_info = channel::GitInfo::new(ignore_git, &src.join("src/tools/miri"));
-        let rustfmt_info = channel::GitInfo::new(ignore_git, &src.join("src/tools/rustfmt"));
+            channel::GitInfo::new(omit_git_hash, &src.join("src/tools/rust-analyzer"));
+        let clippy_info = channel::GitInfo::new(omit_git_hash, &src.join("src/tools/clippy"));
+        let miri_info = channel::GitInfo::new(omit_git_hash, &src.join("src/tools/miri"));
+        let rustfmt_info = channel::GitInfo::new(omit_git_hash, &src.join("src/tools/rustfmt"));
 
         // we always try to use git for LLVM builds
         let in_tree_llvm_info = channel::GitInfo::new(false, &src.join("src/llvm-project"));
@@ -455,7 +456,6 @@ impl Build {
             ci_env: CiEnv::current(),
             delayed_failures: RefCell::new(Vec::new()),
             prerelease_version: Cell::new(None),
-            tool_artifacts: Default::default(),
 
             #[cfg(feature = "build-metrics")]
             metrics: metrics::BuildMetrics::init(),
@@ -656,12 +656,19 @@ impl Build {
             job::setup(self);
         }
 
-        if let Subcommand::Format { check, paths } = &self.config.cmd {
-            return format::format(&builder::Builder::new(&self), *check, &paths);
-        }
-
         // Download rustfmt early so that it can be used in rust-analyzer configs.
         let _ = &builder::Builder::new(&self).initial_rustfmt();
+
+        // hardcoded subcommands
+        match &self.config.cmd {
+            Subcommand::Format { check, paths } => {
+                return format::format(&builder::Builder::new(&self), *check, &paths);
+            }
+            Subcommand::Suggest { run } => {
+                return suggest::suggest(&builder::Builder::new(&self), *run);
+            }
+            _ => (),
+        }
 
         {
             let builder = builder::Builder::new(&self);
@@ -802,6 +809,11 @@ impl Build {
     /// standard library, and targeting the specified architecture.
     fn cargo_out(&self, compiler: Compiler, mode: Mode, target: TargetSelection) -> PathBuf {
         self.stage_out(compiler, mode).join(&*target.triple).join(self.cargo_dir())
+    }
+
+    /// Directory where the extracted `rustc-dev` component is stored.
+    fn ci_rustc_dir(&self, target: TargetSelection) -> PathBuf {
+        self.out.join(&*target.triple).join("ci-rustc")
     }
 
     /// Root output directory for LLVM compiled for `target`
@@ -1233,7 +1245,7 @@ impl Build {
         match &self.config.channel[..] {
             "stable" => num.to_string(),
             "beta" => {
-                if self.rust_info().is_managed_git_subrepository() && !self.config.ignore_git {
+                if self.rust_info().is_managed_git_subrepository() && !self.config.omit_git_hash {
                     format!("{}-beta.{}", num, self.beta_prerelease_version())
                 } else {
                     format!("{}-beta", num)

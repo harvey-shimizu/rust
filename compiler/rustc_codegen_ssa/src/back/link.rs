@@ -923,7 +923,7 @@ fn link_natively<'a>(
             if sess.target.is_like_msvc && linker_not_found {
                 sess.emit_note(errors::MsvcMissingLinker);
                 sess.emit_note(errors::CheckInstalledVisualStudio);
-                sess.emit_note(errors::UnsufficientVSCodeProduct);
+                sess.emit_note(errors::InsufficientVSCodeProduct);
             }
             sess.abort_if_errors();
         }
@@ -2301,7 +2301,7 @@ fn add_native_libs_from_crate(
                         || (whole_archive == None
                             && bundle
                             && cnum == LOCAL_CRATE
-                            && sess.opts.test);
+                            && sess.is_test_crate());
 
                     if bundle && cnum != LOCAL_CRATE {
                         if let Some(filename) = lib.filename {

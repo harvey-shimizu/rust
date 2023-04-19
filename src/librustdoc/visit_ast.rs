@@ -10,12 +10,13 @@ use rustc_hir::{Node, CRATE_HIR_ID};
 use rustc_middle::hir::nested_filter;
 use rustc_middle::ty::TyCtxt;
 use rustc_span::def_id::{CRATE_DEF_ID, LOCAL_CRATE};
+use rustc_span::hygiene::MacroKind;
 use rustc_span::symbol::{kw, sym, Symbol};
 use rustc_span::Span;
 
-use std::mem;
+use std::{iter, mem};
 
-use crate::clean::{cfg::Cfg, AttributesExt, NestedAttributesExt, OneLevelVisitor};
+use crate::clean::{cfg::Cfg, reexport_chain, AttributesExt, NestedAttributesExt};
 use crate::core;
 
 /// This module is used to store stuff from Rust's AST in a more convenient
@@ -87,6 +88,7 @@ pub(crate) struct RustdocVisitor<'a, 'tcx> {
     inside_public_path: bool,
     exact_paths: DefIdMap<Vec<Symbol>>,
     modules: Vec<Module<'tcx>>,
+    is_importable_from_parent: bool,
 }
 
 impl<'a, 'tcx> RustdocVisitor<'a, 'tcx> {
@@ -107,6 +109,7 @@ impl<'a, 'tcx> RustdocVisitor<'a, 'tcx> {
             inside_public_path: true,
             exact_paths: Default::default(),
             modules: vec![om],
+            is_importable_from_parent: true,
         }
     }
 
@@ -133,7 +136,7 @@ impl<'a, 'tcx> RustdocVisitor<'a, 'tcx> {
         // is declared but also a reexport of itself producing two exports of the same
         // macro in the same module.
         let mut inserted = FxHashSet::default();
-        for export in self.cx.tcx.module_reexports(CRATE_DEF_ID).unwrap_or(&[]) {
+        for export in self.cx.tcx.module_children_reexports(CRATE_DEF_ID) {
             if let Res::Def(DefKind::Macro(_), def_id) = export.res &&
                 let Some(local_def_id) = def_id.as_local() &&
                 self.cx.tcx.has_attr(def_id, sym::macro_export) &&
@@ -220,7 +223,6 @@ impl<'a, 'tcx> RustdocVisitor<'a, 'tcx> {
         renamed: Option<Symbol>,
         glob: bool,
         please_inline: bool,
-        path: &hir::UsePath<'_>,
     ) -> bool {
         debug!("maybe_inline_local res: {:?}", res);
 
@@ -266,9 +268,9 @@ impl<'a, 'tcx> RustdocVisitor<'a, 'tcx> {
         }
 
         if !please_inline &&
-            let mut visitor = OneLevelVisitor::new(self.cx.tcx.hir(), res_did) &&
-            let Some(item) = visitor.find_target(self.cx.tcx, def_id.to_def_id(), path) &&
-            let item_def_id = item.owner_id.def_id &&
+            let Some(item_def_id) = reexport_chain(self.cx.tcx, def_id, res_did).iter()
+                .flat_map(|reexport| reexport.id()).map(|id| id.expect_local())
+                .chain(iter::once(res_did)).nth(1) &&
             item_def_id != def_id &&
             self
                 .cx
@@ -320,11 +322,23 @@ impl<'a, 'tcx> RustdocVisitor<'a, 'tcx> {
         renamed: Option<Symbol>,
         parent_id: Option<LocalDefId>,
     ) {
-        self.modules
-            .last_mut()
-            .unwrap()
-            .items
-            .insert((item.owner_id.def_id, renamed), (item, renamed, parent_id));
+        if self.is_importable_from_parent
+            // If we're inside an item, only impl blocks and `macro_rules!` with the `macro_export`
+            // attribute can still be visible.
+            || match item.kind {
+                hir::ItemKind::Impl(..) => true,
+                hir::ItemKind::Macro(_, MacroKind::Bang) => {
+                    self.cx.tcx.has_attr(item.owner_id.def_id, sym::macro_export)
+                }
+                _ => false,
+            }
+        {
+            self.modules
+                .last_mut()
+                .unwrap()
+                .items
+                .insert((item.owner_id.def_id, renamed), (item, renamed, parent_id));
+        }
     }
 
     fn visit_item_inner(
@@ -332,7 +346,7 @@ impl<'a, 'tcx> RustdocVisitor<'a, 'tcx> {
         item: &'tcx hir::Item<'_>,
         renamed: Option<Symbol>,
         import_id: Option<LocalDefId>,
-    ) -> bool {
+    ) {
         debug!("visiting item {:?}", item);
         let name = renamed.unwrap_or(item.ident.name);
         let tcx = self.cx.tcx;
@@ -383,7 +397,6 @@ impl<'a, 'tcx> RustdocVisitor<'a, 'tcx> {
                             ident,
                             is_glob,
                             please_inline,
-                            path,
                         ) {
                             continue;
                         }
@@ -450,7 +463,6 @@ impl<'a, 'tcx> RustdocVisitor<'a, 'tcx> {
                 }
             }
         }
-        true
     }
 
     fn visit_foreign_item_inner(
@@ -487,9 +499,23 @@ impl<'a, 'tcx> Visitor<'tcx> for RustdocVisitor<'a, 'tcx> {
     }
 
     fn visit_item(&mut self, i: &'tcx hir::Item<'tcx>) {
-        if self.visit_item_inner(i, None, None) {
-            walk_item(self, i);
-        }
+        self.visit_item_inner(i, None, None);
+        let new_value = if self.is_importable_from_parent {
+            matches!(
+                i.kind,
+                hir::ItemKind::Mod(..)
+                    | hir::ItemKind::ForeignMod { .. }
+                    | hir::ItemKind::Impl(..)
+                    | hir::ItemKind::Trait(..)
+            )
+        } else {
+            // Whatever the context, if it's an impl block, the items inside it can be used so they
+            // should be visible.
+            matches!(i.kind, hir::ItemKind::Impl(..))
+        };
+        let prev = mem::replace(&mut self.is_importable_from_parent, new_value);
+        walk_item(self, i);
+        self.is_importable_from_parent = prev;
     }
 
     fn visit_mod(&mut self, _: &hir::Mod<'tcx>, _: Span, _: hir::HirId) {

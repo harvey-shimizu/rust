@@ -1,6 +1,7 @@
 use crate::QueryCtxt;
 use rustc_data_structures::fx::{FxHashMap, FxIndexSet};
 use rustc_data_structures::memmap::Mmap;
+use rustc_data_structures::stable_hasher::Hash64;
 use rustc_data_structures::sync::{HashMapExt, Lock, Lrc, RwLock};
 use rustc_data_structures::unhash::UnhashMap;
 use rustc_data_structures::unord::UnordSet;
@@ -138,7 +139,7 @@ impl AbsoluteBytePos {
 /// is the only thing available when decoding the cache's [Footer].
 #[derive(Encodable, Decodable, Clone, Debug)]
 struct EncodedSourceFileId {
-    file_name_hash: u64,
+    file_name_hash: Hash64,
     stable_crate_id: StableCrateId,
 }
 
@@ -667,7 +668,7 @@ impl<'a, 'tcx> Decodable<CacheDecoder<'a, 'tcx>> for ExpnId {
             #[cfg(debug_assertions)]
             {
                 use rustc_data_structures::stable_hasher::{HashStable, StableHasher};
-                let local_hash: u64 = decoder.tcx.with_stable_hashing_context(|mut hcx| {
+                let local_hash = decoder.tcx.with_stable_hashing_context(|mut hcx| {
                     let mut hasher = StableHasher::new();
                     expn_id.expn_data().hash_stable(&mut hcx, &mut hasher);
                     hasher.finish()
@@ -744,7 +745,7 @@ impl<'a, 'tcx> Decodable<CacheDecoder<'a, 'tcx>> for Symbol {
                 let pos = d.read_usize();
                 let old_pos = d.opaque.position();
 
-                // move to str ofset and read
+                // move to str offset and read
                 d.opaque.set_position(pos);
                 let s = d.read_str();
                 let sym = Symbol::intern(s);
@@ -806,7 +807,9 @@ impl<'a, 'tcx> Decodable<CacheDecoder<'a, 'tcx>> for &'tcx UnordSet<LocalDefId> 
     }
 }
 
-impl<'a, 'tcx> Decodable<CacheDecoder<'a, 'tcx>> for &'tcx FxHashMap<DefId, Ty<'tcx>> {
+impl<'a, 'tcx> Decodable<CacheDecoder<'a, 'tcx>>
+    for &'tcx FxHashMap<DefId, ty::EarlyBinder<Ty<'tcx>>>
+{
     fn decode(d: &mut CacheDecoder<'a, 'tcx>) -> Self {
         RefDecodable::decode(d)
     }
@@ -1046,8 +1049,6 @@ impl<'a, 'tcx> Encoder for CacheEncoder<'a, 'tcx> {
         emit_i8(i8);
 
         emit_bool(bool);
-        emit_f64(f64);
-        emit_f32(f32);
         emit_char(char);
         emit_str(&str);
         emit_raw_bytes(&[u8]);
@@ -1064,14 +1065,14 @@ impl<'a, 'tcx> Encodable<CacheEncoder<'a, 'tcx>> for [u8] {
     }
 }
 
-pub fn encode_query_results<'a, 'tcx, Q>(
+pub(crate) fn encode_query_results<'a, 'tcx, Q>(
     query: Q,
     qcx: QueryCtxt<'tcx>,
     encoder: &mut CacheEncoder<'a, 'tcx>,
     query_result_index: &mut EncodedDepNodeIndex,
 ) where
-    Q: super::QueryConfig<QueryCtxt<'tcx>>,
-    Q::Value: Encodable<CacheEncoder<'a, 'tcx>>,
+    Q: super::QueryConfigRestored<'tcx>,
+    Q::RestoredValue: Encodable<CacheEncoder<'a, 'tcx>>,
 {
     let _timer = qcx
         .tcx
@@ -1089,7 +1090,7 @@ pub fn encode_query_results<'a, 'tcx, Q>(
 
             // Encode the type check tables with the `SerializedDepNodeIndex`
             // as tag.
-            encoder.encode_tagged(dep_node, value);
+            encoder.encode_tagged(dep_node, &Q::restore(*value));
         }
     });
 }

@@ -714,9 +714,7 @@ pub enum BindingForm<'tcx> {
 }
 
 TrivialTypeTraversalAndLiftImpls! {
-    for<'tcx> {
-        BindingForm<'tcx>,
-    }
+    BindingForm<'tcx>,
 }
 
 mod binding_form_impl {
@@ -915,7 +913,7 @@ pub enum LocalInfo<'tcx> {
 
 impl<'tcx> LocalDecl<'tcx> {
     pub fn local_info(&self) -> &LocalInfo<'tcx> {
-        &**self.local_info.as_ref().assert_crate_local()
+        &self.local_info.as_ref().assert_crate_local()
     }
 
     /// Returns `true` only if local is a binding that can itself be
@@ -1115,6 +1113,11 @@ pub struct VarDebugInfo<'tcx> {
 
     /// Where the data for this user variable is to be found.
     pub value: VarDebugInfoContents<'tcx>,
+
+    /// When present, indicates what argument number this variable is in the function that it
+    /// originated from (starting from 1). Note, if MIR inlining is enabled, then this is the
+    /// argument number in the original function before it was inlined.
+    pub argument_index: Option<u16>,
 }
 
 ///////////////////////////////////////////////////////////////////////////
@@ -2001,6 +2004,13 @@ impl<'tcx> Rvalue<'tcx> {
 }
 
 impl BorrowKind {
+    pub fn mutability(&self) -> Mutability {
+        match *self {
+            BorrowKind::Shared | BorrowKind::Shallow | BorrowKind::Unique => Mutability::Not,
+            BorrowKind::Mut { .. } => Mutability::Mut,
+        }
+    }
+
     pub fn allows_two_phase_borrow(&self) -> bool {
         match *self {
             BorrowKind::Shared | BorrowKind::Shallow | BorrowKind::Unique => false,

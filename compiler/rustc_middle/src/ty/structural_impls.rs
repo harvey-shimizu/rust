@@ -68,7 +68,7 @@ impl<'tcx> fmt::Debug for ty::adjustment::Adjustment<'tcx> {
 impl fmt::Debug for ty::BoundRegionKind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match *self {
-            ty::BrAnon(n, span) => write!(f, "BrAnon({n:?}, {span:?})"),
+            ty::BrAnon(span) => write!(f, "BrAnon({span:?})"),
             ty::BrNamed(did, name) => {
                 if did.is_crate_root() {
                     write!(f, "BrNamed({})", name)
@@ -197,7 +197,7 @@ impl<'tcx> fmt::Debug for AliasTy<'tcx> {
 // Atomic structs
 //
 // For things that don't carry any arena-allocated data (and are
-// copy...), just add them to one of these lists as appropriat.
+// copy...), just add them to one of these lists as appropriate.
 
 // For things for which the type library provides traversal implementations
 // for all Interners, we only need to provide a Lift implementation:
@@ -254,8 +254,8 @@ TrivialTypeTraversalAndLiftImpls! {
     crate::ty::AssocKind,
     crate::ty::AliasKind,
     crate::ty::AliasRelationDirection,
-    crate::ty::Placeholder<crate::ty::BoundRegionKind>,
-    crate::ty::Placeholder<crate::ty::BoundTyKind>,
+    crate::ty::Placeholder<crate::ty::BoundRegion>,
+    crate::ty::Placeholder<crate::ty::BoundTy>,
     crate::ty::ClosureKind,
     crate::ty::FreeRegion,
     crate::ty::InferTy,
@@ -276,9 +276,7 @@ TrivialTypeTraversalAndLiftImpls! {
 }
 
 TrivialTypeTraversalAndLiftImpls! {
-    for<'tcx> {
-        ty::ValTree<'tcx>,
-    }
+    ty::ValTree<'tcx>,
 }
 
 ///////////////////////////////////////////////////////////////////////////
@@ -580,24 +578,6 @@ impl<'tcx> TypeFoldable<TyCtxt<'tcx>> for ty::Region<'tcx> {
 impl<'tcx> TypeVisitable<TyCtxt<'tcx>> for ty::Region<'tcx> {
     fn visit_with<V: TypeVisitor<TyCtxt<'tcx>>>(&self, visitor: &mut V) -> ControlFlow<V::BreakTy> {
         visitor.visit_region(*self)
-    }
-}
-
-impl<'tcx> TypeSuperFoldable<TyCtxt<'tcx>> for ty::Region<'tcx> {
-    fn try_super_fold_with<F: FallibleTypeFolder<TyCtxt<'tcx>>>(
-        self,
-        _folder: &mut F,
-    ) -> Result<Self, F::Error> {
-        Ok(self)
-    }
-}
-
-impl<'tcx> TypeSuperVisitable<TyCtxt<'tcx>> for ty::Region<'tcx> {
-    fn super_visit_with<V: TypeVisitor<TyCtxt<'tcx>>>(
-        &self,
-        _visitor: &mut V,
-    ) -> ControlFlow<V::BreakTy> {
-        ControlFlow::Continue(())
     }
 }
 

@@ -772,7 +772,7 @@ impl<'tcx> TypeFolder<TyCtxt<'tcx>> for BoundVarReplacer<'_, 'tcx> {
             }
             ty::ReLateBound(debruijn, br) if debruijn >= self.current_index => {
                 let universe = self.universe_for(debruijn);
-                let p = ty::PlaceholderRegion { universe, name: br.kind };
+                let p = ty::PlaceholderRegion { universe, bound: br };
                 self.mapped_regions.insert(p, br);
                 self.infcx.tcx.mk_re_placeholder(p)
             }
@@ -790,7 +790,7 @@ impl<'tcx> TypeFolder<TyCtxt<'tcx>> for BoundVarReplacer<'_, 'tcx> {
             }
             ty::Bound(debruijn, bound_ty) if debruijn >= self.current_index => {
                 let universe = self.universe_for(debruijn);
-                let p = ty::PlaceholderType { universe, name: bound_ty.kind };
+                let p = ty::PlaceholderType { universe, bound: bound_ty };
                 self.mapped_types.insert(p, bound_ty);
                 self.infcx.tcx.mk_placeholder(p)
             }
@@ -809,7 +809,7 @@ impl<'tcx> TypeFolder<TyCtxt<'tcx>> for BoundVarReplacer<'_, 'tcx> {
             }
             ty::ConstKind::Bound(debruijn, bound_const) if debruijn >= self.current_index => {
                 let universe = self.universe_for(debruijn);
-                let p = ty::PlaceholderConst { universe, name: bound_const };
+                let p = ty::PlaceholderConst { universe, bound: bound_const };
                 self.mapped_consts.insert(p, bound_const);
                 self.infcx.tcx.mk_const(p, ct.ty())
             }
@@ -2277,11 +2277,10 @@ fn confirm_impl_trait_in_trait_candidate<'tcx>(
         obligation.param_env,
         cause.clone(),
         obligation.recursion_depth + 1,
-        tcx.bound_return_position_impl_trait_in_trait_tys(impl_fn_def_id)
-            .map_bound(|tys| {
-                tys.map_or_else(|guar| tcx.ty_error(guar), |tys| tys[&obligation.predicate.def_id])
-            })
-            .subst(tcx, impl_fn_substs),
+        tcx.collect_return_position_impl_trait_in_trait_tys(impl_fn_def_id).map_or_else(
+            |guar| tcx.ty_error(guar),
+            |tys| tys[&obligation.predicate.def_id].subst(tcx, impl_fn_substs),
+        ),
         &mut obligations,
     );
 

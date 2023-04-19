@@ -287,7 +287,7 @@ impl<'tcx> TransformVisitor<'tcx> {
         statements.push(Statement {
             kind: StatementKind::Assign(Box::new((
                 Place::return_place(),
-                Rvalue::Aggregate(Box::new(kind), IndexVec::from_iter([val])),
+                Rvalue::Aggregate(Box::new(kind), [val].into()),
             ))),
             source_info,
         });
@@ -1060,7 +1060,12 @@ fn elaborate_generator_drops<'tcx>(tcx: TyCtxt<'tcx>, body: &mut Body<'tcx>) {
         let unwind = if block_data.is_cleanup {
             Unwind::InCleanup
         } else {
-            Unwind::To(unwind.unwrap_or_else(|| elaborator.patch.resume_block()))
+            Unwind::To(match *unwind {
+                UnwindAction::Cleanup(tgt) => tgt,
+                UnwindAction::Continue => elaborator.patch.resume_block(),
+                UnwindAction::Unreachable => elaborator.patch.unreachable_cleanup_block(),
+                UnwindAction::Terminate => elaborator.patch.terminate_block(),
+            })
         };
         elaborate_drop(
             &mut elaborator,
@@ -1147,7 +1152,7 @@ fn insert_panic_block<'tcx>(
         expected: true,
         msg: message,
         target: assert_block,
-        cleanup: None,
+        unwind: UnwindAction::Continue,
     };
 
     let source_info = SourceInfo::outermost(body.span);
@@ -1189,7 +1194,7 @@ fn can_unwind<'tcx>(tcx: TyCtxt<'tcx>, body: &Body<'tcx>) -> bool {
             // These never unwind.
             TerminatorKind::Goto { .. }
             | TerminatorKind::SwitchInt { .. }
-            | TerminatorKind::Abort
+            | TerminatorKind::Terminate
             | TerminatorKind::Return
             | TerminatorKind::Unreachable
             | TerminatorKind::GeneratorDrop
@@ -1248,8 +1253,8 @@ fn create_generator_resume_function<'tcx>(
             } else if !block.is_cleanup {
                 // Any terminators that *can* unwind but don't have an unwind target set are also
                 // pointed at our poisoning block (unless they're part of the cleanup path).
-                if let Some(unwind @ None) = block.terminator_mut().unwind_mut() {
-                    *unwind = Some(poison_block);
+                if let Some(unwind @ UnwindAction::Continue) = block.terminator_mut().unwind_mut() {
+                    *unwind = UnwindAction::Cleanup(poison_block);
                 }
             }
         }
@@ -1294,8 +1299,11 @@ fn create_generator_resume_function<'tcx>(
 fn insert_clean_drop(body: &mut Body<'_>) -> BasicBlock {
     let return_block = insert_term_block(body, TerminatorKind::Return);
 
-    let term =
-        TerminatorKind::Drop { place: Place::from(SELF_ARG), target: return_block, unwind: None };
+    let term = TerminatorKind::Drop {
+        place: Place::from(SELF_ARG),
+        target: return_block,
+        unwind: UnwindAction::Continue,
+    };
     let source_info = SourceInfo::outermost(body.span);
 
     // Create a block to destroy an unresumed generators. This can only destroy upvars.
@@ -1548,6 +1556,13 @@ impl<'tcx> MirPass<'tcx> for StateTransform {
         body.arg_count = 2; // self, resume arg
         body.spread_arg = None;
 
+        // The original arguments to the function are no longer arguments, mark them as such.
+        // Otherwise they'll conflict with our new arguments, which although they don't have
+        // argument_index set, will get emitted as unnamed arguments.
+        for var in &mut body.var_debug_info {
+            var.argument_index = None;
+        }
+
         body.generator.as_mut().unwrap().yield_ty = None;
         body.generator.as_mut().unwrap().generator_layout = Some(layout);
 
@@ -1670,7 +1685,7 @@ impl<'tcx> Visitor<'tcx> for EnsureGeneratorFieldAssignmentsNeverAlias<'_> {
                 args,
                 destination,
                 target: Some(_),
-                cleanup: _,
+                unwind: _,
                 from_hir_call: _,
                 fn_span: _,
             } => {
@@ -1693,7 +1708,7 @@ impl<'tcx> Visitor<'tcx> for EnsureGeneratorFieldAssignmentsNeverAlias<'_> {
             | TerminatorKind::Goto { .. }
             | TerminatorKind::SwitchInt { .. }
             | TerminatorKind::Resume
-            | TerminatorKind::Abort
+            | TerminatorKind::Terminate
             | TerminatorKind::Return
             | TerminatorKind::Unreachable
             | TerminatorKind::Drop { .. }
@@ -1854,7 +1869,7 @@ fn check_must_not_suspend_ty<'tcx>(
                 },
             )
         }
-        // If drop tracking is enabled, we want to look through references, since the referrent
+        // If drop tracking is enabled, we want to look through references, since the referent
         // may not be considered live across the await point.
         ty::Ref(_region, ty, _mutability) => {
             let descr_pre = &format!("{}reference{} to ", data.descr_pre, plural_suffix);

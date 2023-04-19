@@ -141,14 +141,14 @@ codegen_ssa_msvc_missing_linker = the msvc targets depend on the msvc linker but
 
 codegen_ssa_check_installed_visual_studio = please ensure that Visual Studio 2017 or later, or Build Tools for Visual Studio were installed with the Visual C++ option.
 
-codegen_ssa_unsufficient_vs_code_product = VS Code is a different product, and is not sufficient.
+codegen_ssa_insufficient_vs_code_product = VS Code is a different product, and is not sufficient.
 
 codegen_ssa_processing_dymutil_failed = processing debug info with `dsymutil` failed: {$status}
     .note = {$output}
 
 codegen_ssa_unable_to_run_dsymutil = unable to run `dsymutil`: {$error}
 
-codegen_ssa_stripping_debu_info_failed = stripping debug info with `{$util}` failed: {$status}
+codegen_ssa_stripping_debug_info_failed = stripping debug info with `{$util}` failed: {$status}
     .note = {$output}
 
 codegen_ssa_unable_to_run = unable to run `{$util}`: {$error}

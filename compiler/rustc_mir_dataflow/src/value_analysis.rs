@@ -238,7 +238,7 @@ pub trait ValueAnalysis<'tcx> {
             TerminatorKind::Goto { .. }
             | TerminatorKind::SwitchInt { .. }
             | TerminatorKind::Resume
-            | TerminatorKind::Abort
+            | TerminatorKind::Terminate
             | TerminatorKind::Return
             | TerminatorKind::Unreachable
             | TerminatorKind::Assert { .. }
@@ -366,7 +366,7 @@ where
 rustc_index::newtype_index!(
     /// This index uniquely identifies a place.
     ///
-    /// Not every place has a `PlaceIndex`, and not every `PlaceIndex` correspondends to a tracked
+    /// Not every place has a `PlaceIndex`, and not every `PlaceIndex` corresponds to a tracked
     /// place. However, every tracked place and all places along its projection have a `PlaceIndex`.
     pub struct PlaceIndex {}
 );

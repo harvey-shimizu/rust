@@ -8,6 +8,8 @@ use rustc_span::sym;
 use rustc_trait_selection::traits;
 use traits::{translate_substs, Reveal};
 
+use crate::errors::UnexpectedFnPtrAssociatedItem;
+
 fn resolve_instance<'tcx>(
     tcx: TyCtxt<'tcx>,
     key: ty::ParamEnvAnd<'tcx, (DefId, SubstsRef<'tcx>)>,
@@ -232,15 +234,12 @@ fn resolve_associated_item<'tcx>(
             _ => None,
         },
         traits::ImplSource::Object(ref data) => {
-            if let Some(index) = traits::get_vtable_index_of_object_method(tcx, data, trait_item_id)
-            {
-                Some(Instance {
+            traits::get_vtable_index_of_object_method(tcx, data, trait_item_id).map(|index| {
+                Instance {
                     def: ty::InstanceDef::Virtual(trait_item_id, index),
                     substs: rcvr_substs,
-                })
-            } else {
-                None
-            }
+                }
+            })
         }
         traits::ImplSource::Builtin(..) => {
             let lang_items = tcx.lang_items();
@@ -282,10 +281,9 @@ fn resolve_associated_item<'tcx>(
                         substs: rcvr_substs,
                     })
                 } else {
-                    tcx.sess.span_fatal(
-                        tcx.def_span(trait_item_id),
-                        "`FnPtrAddr` trait with unexpected assoc item",
-                    )
+                    tcx.sess.emit_fatal(UnexpectedFnPtrAssociatedItem {
+                        span: tcx.def_span(trait_item_id),
+                    })
                 }
             } else {
                 None

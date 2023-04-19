@@ -31,7 +31,7 @@ use rustc_middle::ty::visit::TypeVisitableExt;
 use rustc_middle::ty::{self, IsSuggestable, Ty};
 use rustc_session::Session;
 use rustc_span::symbol::{kw, Ident};
-use rustc_span::{self, sym, Span};
+use rustc_span::{self, sym, BytePos, Span};
 use rustc_trait_selection::traits::{self, ObligationCauseCode, SelectionContext};
 
 use std::iter;
@@ -472,7 +472,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
         err_code: &str,
         fn_def_id: Option<DefId>,
         call_span: Span,
-        call_expr: &hir::Expr<'tcx>,
+        call_expr: &'tcx hir::Expr<'tcx>,
     ) {
         // Next, let's construct the error
         let (error_span, full_call_span, call_name, is_method) = match &call_expr.kind {
@@ -768,7 +768,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
             let (provided_ty, provided_span) = provided_arg_tys[*provided_idx];
             let trace =
                 mk_trace(provided_span, formal_and_expected_inputs[*expected_idx], provided_ty);
-            if !matches!(trace.cause.as_failure_code(*e), FailureCode::Error0308(_)) {
+            if !matches!(trace.cause.as_failure_code(*e), FailureCode::Error0308) {
                 self.err_ctxt().report_and_explain_type_error(trace, *e).emit();
                 return true;
             }
@@ -807,24 +807,20 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                 full_call_span,
                 format!("arguments to this {} are incorrect", call_name),
             );
-            if let (Some(callee_ty), hir::ExprKind::MethodCall(_, rcvr, _, _)) =
-                (callee_ty, &call_expr.kind)
+
+            if let hir::ExprKind::MethodCall(_, rcvr, _, _) = call_expr.kind
+                && provided_idx.as_usize() == expected_idx.as_usize()
             {
-                // Type that would have accepted this argument if it hadn't been inferred earlier.
-                // FIXME: We leave an inference variable for now, but it'd be nice to get a more
-                // specific type to increase the accuracy of the diagnostic.
-                let expected = self.infcx.next_ty_var(TypeVariableOrigin {
-                    kind: TypeVariableOriginKind::MiscVariable,
-                    span: full_call_span,
-                });
-                self.point_at_expr_source_of_inferred_type(
+                self.note_source_of_type_mismatch_constraint(
                     &mut err,
                     rcvr,
-                    expected,
-                    callee_ty,
-                    provided_arg_span,
+                    crate::demand::TypeMismatchSource::Arg {
+                        call_expr,
+                        incompatible_arg: provided_idx.as_usize(),
+                    },
                 );
             }
+
             // Call out where the function is defined
             self.label_fn_like(
                 &mut err,
@@ -894,8 +890,13 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
         };
 
         let mut errors = errors.into_iter().peekable();
+        let mut only_extras_so_far = errors
+            .peek()
+            .map_or(false, |first| matches!(first, Error::Extra(arg_idx) if arg_idx.index() == 0));
         let mut suggestions = vec![];
         while let Some(error) = errors.next() {
+            only_extras_so_far &= matches!(error, Error::Extra(_));
+
             match error {
                 Error::Invalid(provided_idx, expected_idx, compatibility) => {
                     let (formal_ty, expected_ty) = formal_and_expected_inputs[expected_idx];
@@ -941,10 +942,34 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                         if arg_idx.index() > 0
                         && let Some((_, prev)) = provided_arg_tys
                             .get(ProvidedIdx::from_usize(arg_idx.index() - 1)
-                    ) {
-                        // Include previous comma
-                        span = prev.shrink_to_hi().to(span);
-                    }
+                        ) {
+                            // Include previous comma
+                            span = prev.shrink_to_hi().to(span);
+                        }
+
+                        // Is last argument for deletion in a row starting from the 0-th argument?
+                        // Then delete the next comma, so we are not left with `f(, ...)`
+                        //
+                        //     fn f() {}
+                        //   - f(0, 1,)
+                        //   + f()
+                        if only_extras_so_far
+                            && errors
+                                .peek()
+                                .map_or(true, |next_error| !matches!(next_error, Error::Extra(_)))
+                        {
+                            let next = provided_arg_tys
+                                .get(arg_idx + 1)
+                                .map(|&(_, sp)| sp)
+                                .unwrap_or_else(|| {
+                                    // Subtract one to move before `)`
+                                    call_expr.span.with_lo(call_expr.span.hi() - BytePos(1))
+                                });
+
+                            // Include next comma
+                            span = span.until(next);
+                        }
+
                         suggestions.push((span, String::new()));
 
                         suggestion_text = match suggestion_text {
@@ -1162,11 +1187,11 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
             // index position where it *should have been*, which is *after* the previous one.
             if let Some(provided_idx) = provided_idx {
                 prev = provided_idx.index() as i64;
+                continue;
             }
             let idx = ProvidedIdx::from_usize((prev + 1) as usize);
-            if let None = provided_idx
-                && let Some((_, arg_span)) = provided_arg_tys.get(idx)
-            {
+            if let Some((_, arg_span)) = provided_arg_tys.get(idx) {
+                prev += 1;
                 // There is a type that was *not* found anywhere, so it isn't a move, but a
                 // replacement and we look at what type it should have been. This will allow us
                 // To suggest a multipart suggestion when encountering `foo(1, "")` where the def
@@ -1384,7 +1409,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
             self.demand_eqtype(init.span, local_ty, init_ty);
             init_ty
         } else {
-            self.check_expr_coercable_to_type(init, local_ty, None)
+            self.check_expr_coercible_to_type(init, local_ty, None)
         }
     }
 

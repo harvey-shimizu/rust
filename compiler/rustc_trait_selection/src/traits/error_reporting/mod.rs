@@ -125,6 +125,8 @@ pub trait TypeErrCtxtExt<'tcx> {
             + Print<'tcx, FmtPrinter<'tcx, 'tcx>, Output = FmtPrinter<'tcx, 'tcx>>,
         <T as Print<'tcx, FmtPrinter<'tcx, 'tcx>>>::Error: std::fmt::Debug;
 
+    fn report_overflow_no_abort(&self, obligation: PredicateObligation<'tcx>) -> ErrorGuaranteed;
+
     fn report_fulfillment_errors(&self, errors: &[FulfillmentError<'tcx>]) -> ErrorGuaranteed;
 
     fn report_overflow_obligation<T>(
@@ -465,7 +467,7 @@ impl<'tcx> TypeErrCtxtExt<'tcx> for TypeErrCtxt<'_, 'tcx> {
             }
         }
 
-        self.tcx.sess.delay_span_bug(DUMMY_SP, "expected fullfillment errors")
+        self.tcx.sess.delay_span_bug(DUMMY_SP, "expected fulfillment errors")
     }
 
     /// Reports that an overflow has occurred and halts compilation. We
@@ -602,6 +604,14 @@ impl<'tcx> TypeErrCtxtExt<'tcx> for TypeErrCtxt<'_, 'tcx> {
         );
     }
 
+    fn report_overflow_no_abort(&self, obligation: PredicateObligation<'tcx>) -> ErrorGuaranteed {
+        let obligation = self.resolve_vars_if_possible(obligation);
+        let mut err = self.build_overflow_error(&obligation.predicate, obligation.cause.span, true);
+        self.note_obligation_cause(&mut err, &obligation);
+        self.point_at_returns_when_relevant(&mut err, &obligation);
+        err.emit()
+    }
+
     fn report_selection_error(
         &self,
         mut obligation: PredicateObligation<'tcx>,
@@ -663,6 +673,7 @@ impl<'tcx> TypeErrCtxtExt<'tcx> for TypeErrCtxt<'_, 'tcx> {
                             return;
                         }
                         let trait_ref = trait_predicate.to_poly_trait_ref();
+
                         let (post_message, pre_message, type_def) = self
                             .get_parent_trait_ref(obligation.cause.code())
                             .map(|(t, s)| {
@@ -702,33 +713,44 @@ impl<'tcx> TypeErrCtxtExt<'tcx> for TypeErrCtxt<'_, 'tcx> {
                             (message, note, append_const_msg)
                         };
 
-                        let mut err = struct_span_err!(
-                            self.tcx.sess,
-                            span,
-                            E0277,
-                            "{}",
-                            message
-                                .and_then(|cannot_do_this| {
-                                    match (predicate_is_const, append_const_msg) {
-                                        // do nothing if predicate is not const
-                                        (false, _) => Some(cannot_do_this),
-                                        // suggested using default post message
-                                        (true, Some(None)) => {
-                                            Some(format!("{cannot_do_this} in const contexts"))
-                                        }
-                                        // overridden post message
-                                        (true, Some(Some(post_message))) => {
-                                            Some(format!("{cannot_do_this}{post_message}"))
-                                        }
-                                        // fallback to generic message
-                                        (true, None) => None,
+                        let err_msg = message
+                            .and_then(|cannot_do_this| {
+                                match (predicate_is_const, append_const_msg) {
+                                    // do nothing if predicate is not const
+                                    (false, _) => Some(cannot_do_this),
+                                    // suggested using default post message
+                                    (true, Some(None)) => {
+                                        Some(format!("{cannot_do_this} in const contexts"))
                                     }
-                                })
-                                .unwrap_or_else(|| format!(
+                                    // overridden post message
+                                    (true, Some(Some(post_message))) => {
+                                        Some(format!("{cannot_do_this}{post_message}"))
+                                    }
+                                    // fallback to generic message
+                                    (true, None) => None,
+                                }
+                            })
+                            .unwrap_or_else(|| {
+                                format!(
                                     "the trait bound `{}` is not satisfied{}",
                                     trait_predicate, post_message,
-                                ))
-                        );
+                                )
+                            });
+
+                        let (err_msg, safe_transmute_explanation) = if Some(trait_ref.def_id())
+                            == self.tcx.lang_items().transmute_trait()
+                        {
+                            // Recompute the safe transmute reason and use that for the error reporting
+                            self.get_safe_transmute_error_and_reason(
+                                obligation.clone(),
+                                trait_ref,
+                                span,
+                            )
+                        } else {
+                            (err_msg, None)
+                        };
+
+                        let mut err = struct_span_err!(self.tcx.sess, span, E0277, "{}", err_msg);
 
                         if is_try_conversion && let Some(ret_span) = self.return_type_span(&obligation) {
                             err.span_label(
@@ -818,6 +840,8 @@ impl<'tcx> TypeErrCtxtExt<'tcx> for TypeErrCtxt<'_, 'tcx> {
                                 // at the type param with a label to suggest constraining it.
                                 err.help(&explanation);
                             }
+                        } else if let Some(custom_explanation) = safe_transmute_explanation {
+                            err.span_label(span, custom_explanation);
                         } else {
                             err.span_label(span, explanation);
                         }
@@ -1601,6 +1625,13 @@ trait InferCtxtPrivExt<'tcx> {
         obligated_types: &mut Vec<Ty<'tcx>>,
         cause_code: &ObligationCauseCode<'tcx>,
     ) -> bool;
+
+    fn get_safe_transmute_error_and_reason(
+        &self,
+        obligation: Obligation<'tcx, ty::Predicate<'tcx>>,
+        trait_ref: ty::Binder<'tcx, ty::TraitRef<'tcx>>,
+        span: Span,
+    ) -> (String, Option<String>);
 }
 
 impl<'tcx> InferCtxtPrivExt<'tcx> for TypeErrCtxt<'_, 'tcx> {
@@ -1624,7 +1655,7 @@ impl<'tcx> InferCtxtPrivExt<'tcx> for TypeErrCtxt<'_, 'tcx> {
             }
         };
 
-        for pred in super::elaborate_predicates(self.tcx, std::iter::once(cond)) {
+        for pred in super::elaborate(self.tcx, std::iter::once(cond)) {
             let bound_predicate = pred.kind();
             if let ty::PredicateKind::Clause(ty::Clause::Trait(implication)) =
                 bound_predicate.skip_binder()
@@ -1658,8 +1689,11 @@ impl<'tcx> InferCtxtPrivExt<'tcx> for TypeErrCtxt<'_, 'tcx> {
             FulfillmentErrorCode::CodeProjectionError(ref e) => {
                 self.report_projection_error(&error.obligation, e);
             }
-            FulfillmentErrorCode::CodeAmbiguity => {
+            FulfillmentErrorCode::CodeAmbiguity { overflow: false } => {
                 self.maybe_report_ambiguity(&error.obligation);
+            }
+            FulfillmentErrorCode::CodeAmbiguity { overflow: true } => {
+                self.report_overflow_no_abort(error.obligation.clone());
             }
             FulfillmentErrorCode::CodeSubtypeError(ref expected_found, ref err) => {
                 self.report_mismatched_types(
@@ -1763,7 +1797,10 @@ impl<'tcx> InferCtxtPrivExt<'tcx> for TypeErrCtxt<'_, 'tcx> {
 
                 // constrain inference variables a bit more to nested obligations from normalize so
                 // we can have more helpful errors.
-                ocx.select_where_possible();
+                //
+                // we intentionally drop errors from normalization here,
+                // since the normalization is just done to improve the error message.
+                let _ = ocx.select_where_possible();
 
                 if let Err(new_err) = ocx.eq_exp(
                     &obligation.cause,
@@ -2019,7 +2056,7 @@ impl<'tcx> InferCtxtPrivExt<'tcx> for TypeErrCtxt<'_, 'tcx> {
         if candidates.iter().any(|c| matches!(c.similarity, CandidateSimilarity::Exact { .. })) {
             // If any of the candidates is a perfect match, we don't want to show all of them.
             // This is particularly relevant for the case of numeric types (as they all have the
-            // same cathegory).
+            // same category).
             candidates.retain(|c| matches!(c.similarity, CandidateSimilarity::Exact { .. }));
         }
         candidates
@@ -2380,8 +2417,8 @@ impl<'tcx> InferCtxtPrivExt<'tcx> for TypeErrCtxt<'_, 'tcx> {
                 }
 
                 if let Some(ty::subst::GenericArgKind::Type(_)) = subst.map(|subst| subst.unpack())
+                    && let Some(body_id) = self.tcx.hir().maybe_body_owned_by(obligation.cause.body_id)
                 {
-                    let body_id = self.tcx.hir().body_owned_by(obligation.cause.body_id);
                     let mut expr_finder = FindExprBySpan::new(span);
                     expr_finder.visit_expr(&self.tcx.hir().body(body_id).value);
 
@@ -2878,6 +2915,68 @@ impl<'tcx> InferCtxtPrivExt<'tcx> for TypeErrCtxt<'_, 'tcx> {
             }
         }
         false
+    }
+
+    fn get_safe_transmute_error_and_reason(
+        &self,
+        obligation: Obligation<'tcx, ty::Predicate<'tcx>>,
+        trait_ref: ty::Binder<'tcx, ty::TraitRef<'tcx>>,
+        span: Span,
+    ) -> (String, Option<String>) {
+        // Erase regions because layout code doesn't particularly care about regions.
+        let trait_ref = self.tcx.erase_regions(self.tcx.erase_late_bound_regions(trait_ref));
+
+        let src_and_dst = rustc_transmute::Types {
+            dst: trait_ref.substs.type_at(0),
+            src: trait_ref.substs.type_at(1),
+        };
+        let scope = trait_ref.substs.type_at(2);
+        let Some(assume) =
+            rustc_transmute::Assume::from_const(self.infcx.tcx, obligation.param_env, trait_ref.substs.const_at(3)) else {
+                span_bug!(span, "Unable to construct rustc_transmute::Assume where it was previously possible");
+            };
+        match rustc_transmute::TransmuteTypeEnv::new(self.infcx).is_transmutable(
+            obligation.cause,
+            src_and_dst,
+            scope,
+            assume,
+        ) {
+            rustc_transmute::Answer::No(reason) => {
+                let dst = trait_ref.substs.type_at(0);
+                let src = trait_ref.substs.type_at(1);
+                let custom_err_msg = format!(
+                    "`{src}` cannot be safely transmuted into `{dst}` in the defining scope of `{scope}`"
+                );
+                let reason_msg = match reason {
+                    rustc_transmute::Reason::SrcIsUnspecified => {
+                        format!("`{src}` does not have a well-specified layout")
+                    }
+
+                    rustc_transmute::Reason::DstIsUnspecified => {
+                        format!("`{dst}` does not have a well-specified layout")
+                    }
+
+                    rustc_transmute::Reason::DstIsBitIncompatible => {
+                        format!("At least one value of `{src}` isn't a bit-valid value of `{dst}`")
+                    }
+
+                    rustc_transmute::Reason::DstIsPrivate => format!(
+                        "`{dst}` is or contains a type or field that is not visible in that scope"
+                    ),
+                    // FIXME(bryangarza): Include the number of bytes of src and dst
+                    rustc_transmute::Reason::DstIsTooBig => {
+                        format!("The size of `{src}` is smaller than the size of `{dst}`")
+                    }
+                };
+                (custom_err_msg, Some(reason_msg))
+            }
+            // Should never get a Yes at this point! We already ran it before, and did not get a Yes.
+            rustc_transmute::Answer::Yes => span_bug!(
+                span,
+                "Inconsistent rustc_transmute::is_transmutable(...) result, got Yes",
+            ),
+            _ => span_bug!(span, "Unsupported rustc_transmute::Reason variant"),
+        }
     }
 }
 

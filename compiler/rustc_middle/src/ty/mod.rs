@@ -166,7 +166,8 @@ pub struct ResolverGlobalCtxt {
     pub effective_visibilities: EffectiveVisibilities,
     pub extern_crate_map: FxHashMap<LocalDefId, CrateNum>,
     pub maybe_unused_trait_imports: FxIndexSet<LocalDefId>,
-    pub reexport_map: FxHashMap<LocalDefId, Vec<ModChild>>,
+    pub module_children_non_reexports: LocalDefIdMap<Vec<LocalDefId>>,
+    pub module_children_reexports: LocalDefIdMap<Vec<ModChild>>,
     pub glob_map: FxHashMap<LocalDefId, FxHashSet<Symbol>>,
     pub main_def: Option<MainDefinition>,
     pub trait_impls: FxIndexMap<DefId, Vec<LocalDefId>>,
@@ -1454,12 +1455,12 @@ impl<'tcx> OpaqueHiddenType<'tcx> {
 #[derive(HashStable, TyEncodable, TyDecodable)]
 pub struct Placeholder<T> {
     pub universe: UniverseIndex,
-    pub name: T,
+    pub bound: T,
 }
 
-pub type PlaceholderRegion = Placeholder<BoundRegionKind>;
+pub type PlaceholderRegion = Placeholder<BoundRegion>;
 
-pub type PlaceholderType = Placeholder<BoundTyKind>;
+pub type PlaceholderType = Placeholder<BoundTy>;
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, HashStable)]
 #[derive(TyEncodable, TyDecodable, PartialOrd, Ord)]
@@ -1626,7 +1627,8 @@ struct ParamTag {
 }
 
 unsafe impl rustc_data_structures::tagged_ptr::Tag for ParamTag {
-    const BITS: usize = 2;
+    const BITS: u32 = 2;
+
     #[inline]
     fn into_usize(self) -> usize {
         match self {
@@ -1636,6 +1638,7 @@ unsafe impl rustc_data_structures::tagged_ptr::Tag for ParamTag {
             Self { reveal: traits::Reveal::All, constness: hir::Constness::Const } => 3,
         }
     }
+
     #[inline]
     unsafe fn from_usize(ptr: usize) -> Self {
         match ptr {
@@ -1849,12 +1852,6 @@ impl<'tcx, T> ParamEnvAnd<'tcx, T> {
     pub fn into_parts(self) -> (ParamEnv<'tcx>, T) {
         (self.param_env, self.value)
     }
-
-    #[inline]
-    pub fn without_const(mut self) -> Self {
-        self.param_env = self.param_env.without_const();
-        self
-    }
 }
 
 #[derive(Copy, Clone, Debug, HashStable, Encodable, Decodable)]
@@ -1967,6 +1964,16 @@ impl VariantDef {
     #[inline]
     pub fn ctor_def_id(&self) -> Option<DefId> {
         self.ctor.map(|(_, def_id)| def_id)
+    }
+
+    /// Returns the one field in this variant.
+    ///
+    /// `panic!`s if there are no fields or multiple fields.
+    #[inline]
+    pub fn single_field(&self) -> &FieldDef {
+        assert!(self.fields.len() == 1);
+
+        &self.fields[FieldIdx::from_u32(0)]
     }
 }
 

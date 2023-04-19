@@ -42,18 +42,20 @@ pub struct InvalidLabel {
 }
 
 #[derive(Diagnostic)]
-#[diag(ast_passes_invalid_visibility, code = "E0449")]
-pub struct InvalidVisibility {
+#[diag(ast_passes_visibility_not_permitted, code = "E0449")]
+pub struct VisibilityNotPermitted {
     #[primary_span]
     pub span: Span,
-    #[label(ast_passes_implied)]
-    pub implied: Option<Span>,
     #[subdiagnostic]
-    pub note: Option<InvalidVisibilityNote>,
+    pub note: VisibilityNotPermittedNote,
 }
 
 #[derive(Subdiagnostic)]
-pub enum InvalidVisibilityNote {
+pub enum VisibilityNotPermittedNote {
+    #[note(ast_passes_enum_variant)]
+    EnumVariant,
+    #[note(ast_passes_trait_impl)]
+    TraitImpl,
     #[note(ast_passes_individual_impl_items)]
     IndividualImplItems,
     #[note(ast_passes_individual_foreign_items)]
@@ -675,7 +677,7 @@ impl AddToDiagnostic for StableFeature {
 }
 
 #[derive(Diagnostic)]
-#[diag(ast_passes_incompatbile_features)]
+#[diag(ast_passes_incompatible_features)]
 #[help]
 pub struct IncompatibleFeatures {
     #[primary_span]

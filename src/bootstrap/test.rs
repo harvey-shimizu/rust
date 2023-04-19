@@ -129,6 +129,42 @@ impl Step for CrateJsonDocLint {
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+pub struct SuggestTestsCrate {
+    host: TargetSelection,
+}
+
+impl Step for SuggestTestsCrate {
+    type Output = ();
+    const ONLY_HOSTS: bool = true;
+    const DEFAULT: bool = true;
+
+    fn should_run(run: ShouldRun<'_>) -> ShouldRun<'_> {
+        run.path("src/tools/suggest-tests")
+    }
+
+    fn make_run(run: RunConfig<'_>) {
+        run.builder.ensure(SuggestTestsCrate { host: run.target });
+    }
+
+    fn run(self, builder: &Builder<'_>) {
+        let bootstrap_host = builder.config.build;
+        let compiler = builder.compiler(0, bootstrap_host);
+
+        let suggest_tests = tool::prepare_tool_cargo(
+            builder,
+            compiler,
+            Mode::ToolBootstrap,
+            bootstrap_host,
+            "test",
+            "src/tools/suggest-tests",
+            SourceType::InTree,
+            &[],
+        );
+        add_flags_and_try_run_tests(builder, &mut suggest_tests.into());
+    }
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
 pub struct Linkcheck {
     host: TargetSelection,
 }
@@ -638,7 +674,10 @@ impl Step for Miri {
         // Forward test filters.
         cargo.arg("--").args(builder.config.cmd.test_args());
 
-        add_flags_and_try_run_tests(builder, &mut cargo.into());
+        // This can NOT be `add_flags_and_try_run_tests` since the Miri test runner
+        // does not understand those flags!
+        let mut cargo = Command::from(cargo);
+        builder.run(&mut cargo);
 
         // # Run `cargo miri test`.
         // This is just a smoke test (Miri's own CI invokes this in a bunch of different ways and ensures
@@ -1064,6 +1103,8 @@ impl Step for RustdocGUI {
                     cargo.env("RUSTDOCFLAGS", "-Zunstable-options --generate-link-to-definition");
                 } else if entry.file_name() == "scrape_examples" {
                     cargo.arg("-Zrustdoc-scrape-examples");
+                } else if entry.file_name() == "extend_css" {
+                    cargo.env("RUSTDOCFLAGS", &format!("--extend-css extra.css"));
                 }
                 builder.run(&mut cargo);
             }
@@ -1133,7 +1174,7 @@ impl Step for Tidy {
         if builder.config.channel == "dev" || builder.config.channel == "nightly" {
             builder.info("fmt check");
             if builder.initial_rustfmt().is_none() {
-                let inferred_rustfmt_dir = builder.config.initial_rustc.parent().unwrap();
+                let inferred_rustfmt_dir = builder.initial_rustc.parent().unwrap();
                 eprintln!(
                     "\
 error: no `rustfmt` binary found in {PATH}
@@ -1407,7 +1448,7 @@ note: if you're sure you want to do this, please open an issue as to why. In the
             crate::detail_exit(1);
         }
 
-        let compiler = self.compiler;
+        let mut compiler = self.compiler;
         let target = self.target;
         let mode = self.mode;
         let suite = self.suite;
@@ -1420,13 +1461,26 @@ note: if you're sure you want to do this, please open an issue as to why. In the
             return;
         }
 
-        if suite == "debuginfo" {
-            builder
-                .ensure(dist::DebuggerScripts { sysroot: builder.sysroot(compiler), host: target });
-        }
+        // Support stage 1 ui-fulldeps. This is somewhat complicated: ui-fulldeps tests for the most
+        // part test the *API* of the compiler, not how it compiles a given file. As a result, we
+        // can run them against the stage 1 sources as long as we build them with the stage 0
+        // bootstrap compiler.
+        // NOTE: Only stage 1 is special cased because we need the rustc_private artifacts to match the
+        // running compiler in stage 2 when plugins run.
+        let stage_id = if suite == "ui-fulldeps" && compiler.stage == 1 {
+            compiler = builder.compiler(compiler.stage - 1, target);
+            format!("stage{}-{}", compiler.stage + 1, target)
+        } else {
+            format!("stage{}-{}", compiler.stage, target)
+        };
 
         if suite.ends_with("fulldeps") {
             builder.ensure(compile::Rustc::new(compiler, target));
+        }
+
+        if suite == "debuginfo" {
+            builder
+                .ensure(dist::DebuggerScripts { sysroot: builder.sysroot(compiler), host: target });
         }
 
         builder.ensure(compile::Std::new(compiler, target));
@@ -1487,7 +1541,7 @@ note: if you're sure you want to do this, please open an issue as to why. In the
         cmd.arg("--src-base").arg(builder.src.join("tests").join(suite));
         cmd.arg("--build-base").arg(testdir(builder, compiler.host).join(suite));
         cmd.arg("--sysroot-base").arg(builder.sysroot(compiler));
-        cmd.arg("--stage-id").arg(format!("stage{}-{}", compiler.stage, target));
+        cmd.arg("--stage-id").arg(stage_id);
         cmd.arg("--suite").arg(suite);
         cmd.arg("--mode").arg(mode);
         cmd.arg("--target").arg(target.rustc_target_arg());
@@ -1535,7 +1589,10 @@ note: if you're sure you want to do this, please open an issue as to why. In the
         flags.extend(builder.config.cmd.rustc_args().iter().map(|s| s.to_string()));
 
         if let Some(linker) = builder.linker(target) {
-            cmd.arg("--linker").arg(linker);
+            cmd.arg("--target-linker").arg(linker);
+        }
+        if let Some(linker) = builder.linker(compiler.host) {
+            cmd.arg("--host-linker").arg(linker);
         }
 
         let mut hostflags = flags.clone();
@@ -1759,6 +1816,10 @@ note: if you're sure you want to do this, please open an issue as to why. In the
         cmd.env("BOOTSTRAP_CARGO", &builder.initial_cargo);
 
         cmd.arg("--channel").arg(&builder.config.channel);
+
+        if !builder.config.omit_git_hash {
+            cmd.arg("--git-hash");
+        }
 
         if let Some(commit) = builder.config.download_rustc_commit() {
             cmd.env("FAKE_DOWNLOAD_RUSTC_PREFIX", format!("/rustc/{commit}"));
@@ -2143,7 +2204,7 @@ impl Step for Crate {
                 compile::std_cargo(builder, target, compiler.stage, &mut cargo);
             }
             Mode::Rustc => {
-                compile::rustc_cargo(builder, &mut cargo, target);
+                compile::rustc_cargo(builder, &mut cargo, target, compiler.stage);
             }
             _ => panic!("can only test libraries"),
         };

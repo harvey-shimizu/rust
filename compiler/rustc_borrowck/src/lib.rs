@@ -20,6 +20,7 @@ extern crate tracing;
 use rustc_data_structures::fx::{FxIndexMap, FxIndexSet};
 use rustc_data_structures::graph::dominators::Dominators;
 use rustc_errors::{Diagnostic, DiagnosticBuilder, DiagnosticMessage, SubdiagnosticMessage};
+use rustc_fluent_macro::fluent_messages;
 use rustc_hir as hir;
 use rustc_hir::def_id::LocalDefId;
 use rustc_index::bit_set::ChunkedBitSet;
@@ -27,7 +28,6 @@ use rustc_index::vec::{IndexSlice, IndexVec};
 use rustc_infer::infer::{
     DefiningAnchor, InferCtxt, NllRegionVariableOrigin, RegionVariableOrigin, TyCtxtInferExt,
 };
-use rustc_macros::fluent_messages;
 use rustc_middle::mir::{
     traversal, Body, ClearCrossCrate, Local, Location, Mutability, NonDivergingIntrinsic, Operand,
     Place, PlaceElem, PlaceRef, VarDebugInfoContents,
@@ -88,13 +88,14 @@ mod session_diagnostics;
 mod type_check;
 mod universal_regions;
 mod used_muts;
+mod util;
 
 /// A public API provided for the Rust compiler consumers.
 pub mod consumers;
 
 use borrow_set::{BorrowData, BorrowSet};
 use dataflow::{BorrowIndex, BorrowckFlowState as Flows, BorrowckResults, Borrows};
-use nll::{PoloniusOutput, ToRegionVid};
+use nll::PoloniusOutput;
 use place_ext::PlaceExt;
 use places_conflict::{places_conflict, PlaceConflictBias};
 use region_infer::RegionInferenceContext;
@@ -507,9 +508,7 @@ impl<'cx, 'tcx> BorrowckInferCtxt<'cx, 'tcx> {
         F: Fn() -> RegionCtxt,
     {
         let next_region = self.infcx.next_region_var(origin);
-        let vid = next_region
-            .as_var()
-            .unwrap_or_else(|| bug!("expected RegionKind::RegionVar on {:?}", next_region));
+        let vid = next_region.as_var();
 
         if cfg!(debug_assertions) && !self.inside_canonicalization_ctxt() {
             debug!("inserting vid {:?} with origin {:?} into var_to_origin", vid, origin);
@@ -530,10 +529,8 @@ impl<'cx, 'tcx> BorrowckInferCtxt<'cx, 'tcx> {
     where
         F: Fn() -> RegionCtxt,
     {
-        let next_region = self.infcx.next_nll_region_var(origin.clone());
-        let vid = next_region
-            .as_var()
-            .unwrap_or_else(|| bug!("expected RegionKind::RegionVar on {:?}", next_region));
+        let next_region = self.infcx.next_nll_region_var(origin);
+        let vid = next_region.as_var();
 
         if cfg!(debug_assertions) && !self.inside_canonicalization_ctxt() {
             debug!("inserting vid {:?} with origin {:?} into var_to_origin", vid, origin);
@@ -740,7 +737,7 @@ impl<'cx, 'tcx> rustc_mir_dataflow::ResultsVisitor<'cx, 'tcx> for MirBorrowckCtx
                 args,
                 destination,
                 target: _,
-                cleanup: _,
+                unwind: _,
                 from_hir_call: _,
                 fn_span: _,
             } => {
@@ -750,7 +747,7 @@ impl<'cx, 'tcx> rustc_mir_dataflow::ResultsVisitor<'cx, 'tcx> for MirBorrowckCtx
                 }
                 self.mutate_place(loc, (*destination, span), Deep, flow_state);
             }
-            TerminatorKind::Assert { cond, expected: _, msg, target: _, cleanup: _ } => {
+            TerminatorKind::Assert { cond, expected: _, msg, target: _, unwind: _ } => {
                 self.consume_operand(loc, (cond, span), flow_state);
                 use rustc_middle::mir::AssertKind;
                 if let AssertKind::BoundsCheck { len, index } = msg {
@@ -770,7 +767,7 @@ impl<'cx, 'tcx> rustc_mir_dataflow::ResultsVisitor<'cx, 'tcx> for MirBorrowckCtx
                 options: _,
                 line_spans: _,
                 destination: _,
-                cleanup: _,
+                unwind: _,
             } => {
                 for op in operands {
                     match op {
@@ -801,7 +798,7 @@ impl<'cx, 'tcx> rustc_mir_dataflow::ResultsVisitor<'cx, 'tcx> for MirBorrowckCtx
             }
 
             TerminatorKind::Goto { target: _ }
-            | TerminatorKind::Abort
+            | TerminatorKind::Terminate
             | TerminatorKind::Unreachable
             | TerminatorKind::Resume
             | TerminatorKind::Return
@@ -845,7 +842,7 @@ impl<'cx, 'tcx> rustc_mir_dataflow::ResultsVisitor<'cx, 'tcx> for MirBorrowckCtx
                 }
             }
 
-            TerminatorKind::Abort
+            TerminatorKind::Terminate
             | TerminatorKind::Assert { .. }
             | TerminatorKind::Call { .. }
             | TerminatorKind::Drop { .. }

@@ -823,7 +823,7 @@ unsafe impl<T: ?Sized> Freeze for &mut T {}
 /// [`pin` module]: crate::pin
 #[stable(feature = "pin", since = "1.33.0")]
 #[rustc_on_unimplemented(
-    note = "consider using `Box::pin`",
+    note = "consider using the `pin!` macro\nconsider using `Box::pin` if you need to access the pinned value outside of the current scope",
     message = "`{Self}` cannot be unpinned"
 )]
 #[lang = "unpin"]
@@ -879,7 +879,7 @@ pub trait Tuple {}
 #[unstable(feature = "pointer_like_trait", issue = "none")]
 #[lang = "pointer_like"]
 #[rustc_on_unimplemented(
-    message = "`{Self}` needs to have the same alignment and size as a pointer",
+    message = "`{Self}` needs to have the same ABI as a pointer",
     label = "`{Self}` needs to be a pointer-like type"
 )]
 pub trait PointerLike {}

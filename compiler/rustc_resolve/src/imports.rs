@@ -17,6 +17,7 @@ use rustc_data_structures::intern::Interned;
 use rustc_errors::{pluralize, struct_span_err, Applicability, MultiSpan};
 use rustc_hir::def::{self, DefKind, PartialRes};
 use rustc_middle::metadata::ModChild;
+use rustc_middle::metadata::Reexport;
 use rustc_middle::span_bug;
 use rustc_middle::ty;
 use rustc_session::lint::builtin::{
@@ -27,6 +28,7 @@ use rustc_span::edit_distance::find_best_match_for_name;
 use rustc_span::hygiene::LocalExpnId;
 use rustc_span::symbol::{kw, Ident, Symbol};
 use rustc_span::Span;
+use smallvec::SmallVec;
 
 use std::cell::Cell;
 use std::{mem, ptr};
@@ -188,6 +190,17 @@ impl<'a> Import<'a> {
             | ImportKind::Glob { id, .. }
             | ImportKind::ExternCrate { id, .. } => Some(id),
             ImportKind::MacroUse | ImportKind::MacroExport => None,
+        }
+    }
+
+    fn simplify(&self, r: &Resolver<'_, '_>) -> Reexport {
+        let to_def_id = |id| r.local_def_id(id).to_def_id();
+        match self.kind {
+            ImportKind::Single { id, .. } => Reexport::Single(to_def_id(id)),
+            ImportKind::Glob { id, .. } => Reexport::Glob(to_def_id(id)),
+            ImportKind::ExternCrate { id, .. } => Reexport::ExternCrate(to_def_id(id)),
+            ImportKind::MacroUse => Reexport::MacroUse,
+            ImportKind::MacroExport => Reexport::MacroExport,
         }
     }
 }
@@ -1248,24 +1261,32 @@ impl<'a, 'tcx> Resolver<'a, 'tcx> {
         *module.globs.borrow_mut() = Vec::new();
 
         if let Some(def_id) = module.opt_def_id() {
+            let mut non_reexports = Vec::new();
             let mut reexports = Vec::new();
 
             module.for_each_child(self, |this, ident, _, binding| {
-                if let Some(res) = this.is_reexport(binding) {
-                    reexports.push(ModChild {
-                        ident,
-                        res,
-                        vis: binding.vis,
-                        span: binding.span,
-                        macro_rules: false,
-                    });
+                let res = binding.res().expect_non_local();
+                if !binding.is_import() {
+                    non_reexports.push(res.def_id().expect_local());
+                } else if res != def::Res::Err && !binding.is_ambiguity() {
+                    let mut reexport_chain = SmallVec::new();
+                    let mut next_binding = binding;
+                    while let NameBindingKind::Import { binding, import, .. } = next_binding.kind {
+                        reexport_chain.push(import.simplify(this));
+                        next_binding = binding;
+                    }
+
+                    reexports.push(ModChild { ident, res, vis: binding.vis, reexport_chain });
                 }
             });
 
+            // Should be fine because this code is only called for local modules.
+            let def_id = def_id.expect_local();
+            if !non_reexports.is_empty() {
+                self.module_children_non_reexports.insert(def_id, non_reexports);
+            }
             if !reexports.is_empty() {
-                // Call to `expect_local` should be fine because current
-                // code is only called for local modules.
-                self.reexport_map.insert(def_id.expect_local(), reexports);
+                self.module_children_reexports.insert(def_id, reexports);
             }
         }
     }

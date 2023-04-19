@@ -38,6 +38,7 @@ use rustc_infer::infer;
 use rustc_infer::infer::type_variable::{TypeVariableOrigin, TypeVariableOriginKind};
 use rustc_infer::infer::DefineOpaqueTypes;
 use rustc_infer::infer::InferOk;
+use rustc_infer::traits::query::NoSolution;
 use rustc_infer::traits::ObligationCause;
 use rustc_middle::middle::stability;
 use rustc_middle::ty::adjustment::{Adjust, Adjustment, AllowTwoPhase};
@@ -53,6 +54,8 @@ use rustc_span::symbol::{kw, sym, Ident, Symbol};
 use rustc_target::abi::FieldIdx;
 use rustc_target::spec::abi::Abi::RustIntrinsic;
 use rustc_trait_selection::infer::InferCtxtExt;
+use rustc_trait_selection::traits::error_reporting::TypeErrCtxtExt;
+use rustc_trait_selection::traits::ObligationCtxt;
 use rustc_trait_selection::traits::{self, ObligationCauseCode};
 
 impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
@@ -120,7 +123,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
         ty
     }
 
-    pub(super) fn check_expr_coercable_to_type(
+    pub(super) fn check_expr_coercible_to_type(
         &self,
         expr: &'tcx hir::Expr<'tcx>,
         expected: Ty<'tcx>,
@@ -1128,7 +1131,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
             }
         };
 
-        // This is (basically) inlined `check_expr_coercable_to_type`, but we want
+        // This is (basically) inlined `check_expr_coercible_to_type`, but we want
         // to suggest an additional fixup here in `suggest_deref_binop`.
         let rhs_ty = self.check_expr_with_hint(&rhs, lhs_ty);
         if let (_, Some(mut diag)) =
@@ -1401,7 +1404,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
 
         let (element_ty, t) = match uty {
             Some(uty) => {
-                self.check_expr_coercable_to_type(&element, uty, None);
+                self.check_expr_coercible_to_type(&element, uty, None);
                 (uty, uty)
             }
             None => {
@@ -1478,7 +1481,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
         let elt_ts_iter = elts.iter().enumerate().map(|(i, e)| match flds {
             Some(fs) if i < fs.len() => {
                 let ety = fs[i];
-                self.check_expr_coercable_to_type(&e, ety, None);
+                self.check_expr_coercible_to_type(&e, ety, None);
                 ety
             }
             _ => self.check_expr_with_expectation(&e, NoExpectation),
@@ -1735,10 +1738,8 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
             } else {
                 self.check_expr_has_type_or_error(base_expr, adt_ty, |_| {
                     let base_ty = self.typeck_results.borrow().expr_ty(*base_expr);
-                    let same_adt = match (adt_ty.kind(), base_ty.kind()) {
-                        (ty::Adt(adt, _), ty::Adt(base_adt, _)) if adt == base_adt => true,
-                        _ => false,
-                    };
+                    let same_adt = matches!((adt_ty.kind(), base_ty.kind()),
+                        (ty::Adt(adt, _), ty::Adt(base_adt, _)) if adt == base_adt);
                     if self.tcx.sess.is_nightly_build() && same_adt {
                         feature_err(
                             &self.tcx.sess.parse_sess,
@@ -2802,6 +2803,17 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                     element_ty
                 }
                 None => {
+                    // Attempt to *shallowly* search for an impl which matches,
+                    // but has nested obligations which are unsatisfied.
+                    for (base_t, _) in self.autoderef(base.span, base_t).silence_errors() {
+                        if let Some((_, index_ty, element_ty)) =
+                            self.find_and_report_unsatisfied_index_impl(expr.hir_id, base, base_t)
+                        {
+                            self.demand_coerce(idx, idx_t, index_ty, None, AllowTwoPhase::No);
+                            return element_ty;
+                        }
+                    }
+
                     let mut err = type_error_struct!(
                         self.tcx.sess,
                         expr.span,
@@ -2810,23 +2822,26 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                         "cannot index into a value of type `{base_t}`",
                     );
                     // Try to give some advice about indexing tuples.
-                    if let ty::Tuple(..) = base_t.kind() {
+                    if let ty::Tuple(types) = base_t.kind() {
                         let mut needs_note = true;
                         // If the index is an integer, we can show the actual
                         // fixed expression:
-                        if let ExprKind::Lit(ref lit) = idx.kind {
-                            if let ast::LitKind::Int(i, ast::LitIntType::Unsuffixed) = lit.node {
-                                let snip = self.tcx.sess.source_map().span_to_snippet(base.span);
-                                if let Ok(snip) = snip {
-                                    err.span_suggestion(
-                                        expr.span,
-                                        "to access tuple elements, use",
-                                        format!("{snip}.{i}"),
-                                        Applicability::MachineApplicable,
-                                    );
-                                    needs_note = false;
-                                }
+                        if let ExprKind::Lit(ref lit) = idx.kind
+                            && let ast::LitKind::Int(i, ast::LitIntType::Unsuffixed) = lit.node
+                            && i < types.len().try_into().expect("expected tuple index to be < usize length")
+                        {
+                            let snip = self.tcx.sess.source_map().span_to_snippet(base.span);
+                            if let Ok(snip) = snip {
+                                err.span_suggestion(
+                                    expr.span,
+                                    "to access tuple elements, use",
+                                    format!("{snip}.{i}"),
+                                    Applicability::MachineApplicable,
+                                );
+                                needs_note = false;
                             }
+                        } else if let ExprKind::Path(..) = idx.peel_borrows().kind {
+                            err.span_label(idx.span, "cannot access tuple elements at a variable index");
                         }
                         if needs_note {
                             err.help(
@@ -2840,6 +2855,82 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                 }
             }
         }
+    }
+
+    /// Try to match an implementation of `Index` against a self type, and report
+    /// the unsatisfied predicates that result from confirming this impl.
+    ///
+    /// Given an index expression, sometimes the `Self` type shallowly but does not
+    /// deeply satisfy an impl predicate. Instead of simply saying that the type
+    /// does not support being indexed, we want to point out exactly what nested
+    /// predicates cause this to be, so that the user can add them to fix their code.
+    fn find_and_report_unsatisfied_index_impl(
+        &self,
+        index_expr_hir_id: HirId,
+        base_expr: &hir::Expr<'_>,
+        base_ty: Ty<'tcx>,
+    ) -> Option<(ErrorGuaranteed, Ty<'tcx>, Ty<'tcx>)> {
+        let index_trait_def_id = self.tcx.lang_items().index_trait()?;
+        let index_trait_output_def_id = self.tcx.get_diagnostic_item(sym::IndexOutput)?;
+
+        let mut relevant_impls = vec![];
+        self.tcx.for_each_relevant_impl(index_trait_def_id, base_ty, |impl_def_id| {
+            relevant_impls.push(impl_def_id);
+        });
+        let [impl_def_id] = relevant_impls[..] else {
+            // Only report unsatisfied impl predicates if there's one impl
+            return None;
+        };
+
+        self.commit_if_ok(|_| {
+            let ocx = ObligationCtxt::new_in_snapshot(self);
+            let impl_substs = self.fresh_substs_for_item(base_expr.span, impl_def_id);
+            let impl_trait_ref =
+                self.tcx.impl_trait_ref(impl_def_id).unwrap().subst(self.tcx, impl_substs);
+            let cause = self.misc(base_expr.span);
+
+            // Match the impl self type against the base ty. If this fails,
+            // we just skip this impl, since it's not particularly useful.
+            let impl_trait_ref = ocx.normalize(&cause, self.param_env, impl_trait_ref);
+            ocx.eq(&cause, self.param_env, impl_trait_ref.self_ty(), base_ty)?;
+
+            // Register the impl's predicates. One of these predicates
+            // must be unsatisfied, or else we wouldn't have gotten here
+            // in the first place.
+            ocx.register_obligations(traits::predicates_for_generics(
+                |idx, span| {
+                    traits::ObligationCause::new(
+                        base_expr.span,
+                        self.body_id,
+                        if span.is_dummy() {
+                            traits::ExprItemObligation(impl_def_id, index_expr_hir_id, idx)
+                        } else {
+                            traits::ExprBindingObligation(impl_def_id, span, index_expr_hir_id, idx)
+                        },
+                    )
+                },
+                self.param_env,
+                self.tcx.predicates_of(impl_def_id).instantiate(self.tcx, impl_substs),
+            ));
+
+            // Normalize the output type, which we can use later on as the
+            // return type of the index expression...
+            let element_ty = ocx.normalize(
+                &cause,
+                self.param_env,
+                self.tcx.mk_projection(index_trait_output_def_id, impl_trait_ref.substs),
+            );
+
+            let errors = ocx.select_where_possible();
+            // There should be at least one error reported. If not, we
+            // will still delay a span bug in `report_fulfillment_errors`.
+            Ok::<_, NoSolution>((
+                self.err_ctxt().report_fulfillment_errors(&errors),
+                impl_trait_ref.substs.type_at(1),
+                element_ty,
+            ))
+        })
+        .ok()
     }
 
     fn point_at_index_if_possible(
@@ -2866,7 +2957,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
     ) -> Ty<'tcx> {
         match self.resume_yield_tys {
             Some((resume_ty, yield_ty)) => {
-                self.check_expr_coercable_to_type(&value, yield_ty, None);
+                self.check_expr_coercible_to_type(&value, yield_ty, None);
 
                 resume_ty
             }
@@ -2875,7 +2966,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
             // information. Hence, we check the source of the yield expression here and check its
             // value's type against `()` (this check should always hold).
             None if src.is_await() => {
-                self.check_expr_coercable_to_type(&value, self.tcx.mk_unit(), None);
+                self.check_expr_coercible_to_type(&value, self.tcx.mk_unit(), None);
                 self.tcx.mk_unit()
             }
             _ => {

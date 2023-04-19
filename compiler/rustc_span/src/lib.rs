@@ -59,7 +59,7 @@ pub mod fatal_error;
 
 pub mod profiling;
 
-use rustc_data_structures::stable_hasher::{HashStable, StableHasher};
+use rustc_data_structures::stable_hasher::{Hash128, Hash64, HashStable, StableHasher};
 use rustc_data_structures::sync::{Lock, Lrc};
 
 use std::borrow::Cow;
@@ -282,22 +282,22 @@ impl RealFileName {
 pub enum FileName {
     Real(RealFileName),
     /// Call to `quote!`.
-    QuoteExpansion(u64),
+    QuoteExpansion(Hash64),
     /// Command line.
-    Anon(u64),
+    Anon(Hash64),
     /// Hack in `src/librustc_ast/parse.rs`.
     // FIXME(jseyfried)
-    MacroExpansion(u64),
-    ProcMacroSourceCode(u64),
+    MacroExpansion(Hash64),
+    ProcMacroSourceCode(Hash64),
     /// Strings provided as `--cfg [cfgspec]` stored in a `crate_cfg`.
-    CfgSpec(u64),
+    CfgSpec(Hash64),
     /// Strings provided as crate attributes in the CLI.
-    CliCrateAttr(u64),
+    CliCrateAttr(Hash64),
     /// Custom sources for explicit parser calls from plugins and drivers.
     Custom(String),
     DocTest(PathBuf, isize),
     /// Post-substitution inline assembly from LLVM.
-    InlineAsm(u64),
+    InlineAsm(Hash64),
 }
 
 impl From<PathBuf> for FileName {
@@ -1343,7 +1343,7 @@ pub struct SourceFile {
     /// Locations of characters removed during normalization.
     pub normalized_pos: Vec<NormalizedPos>,
     /// A hash of the filename, used for speeding up hashing in incremental compilation.
-    pub name_hash: u128,
+    pub name_hash: Hash128,
     /// Indicates which crate this `SourceFile` was imported from.
     pub cnum: CrateNum,
 }
@@ -1353,16 +1353,16 @@ impl Clone for SourceFile {
         Self {
             name: self.name.clone(),
             src: self.src.clone(),
-            src_hash: self.src_hash.clone(),
+            src_hash: self.src_hash,
             external_src: Lock::new(self.external_src.borrow().clone()),
-            start_pos: self.start_pos.clone(),
-            end_pos: self.end_pos.clone(),
+            start_pos: self.start_pos,
+            end_pos: self.end_pos,
             lines: Lock::new(self.lines.borrow().clone()),
             multibyte_chars: self.multibyte_chars.clone(),
             non_narrow_chars: self.non_narrow_chars.clone(),
             normalized_pos: self.normalized_pos.clone(),
-            name_hash: self.name_hash.clone(),
-            cnum: self.cnum.clone(),
+            name_hash: self.name_hash,
+            cnum: self.cnum,
         }
     }
 }
@@ -1472,7 +1472,7 @@ impl<D: Decoder> Decodable<D> for SourceFile {
         };
         let multibyte_chars: Vec<MultiByteChar> = Decodable::decode(d);
         let non_narrow_chars: Vec<NonNarrowChar> = Decodable::decode(d);
-        let name_hash: u128 = Decodable::decode(d);
+        let name_hash = Decodable::decode(d);
         let normalized_pos: Vec<NormalizedPos> = Decodable::decode(d);
         let cnum: CrateNum = Decodable::decode(d);
         SourceFile {
@@ -1514,7 +1514,7 @@ impl SourceFile {
         let name_hash = {
             let mut hasher: StableHasher = StableHasher::new();
             name.hash(&mut hasher);
-            hasher.finish::<u128>()
+            hasher.finish()
         };
         let end_pos = start_pos.to_usize() + src.len();
         assert!(end_pos <= u32::MAX as usize);
@@ -1663,10 +1663,11 @@ impl SourceFile {
 
         if let Some(ref src) = self.src {
             Some(Cow::from(get_until_newline(src, begin)))
-        } else if let Some(src) = self.external_src.borrow().get_source() {
-            Some(Cow::Owned(String::from(get_until_newline(src, begin))))
         } else {
-            None
+            self.external_src
+                .borrow()
+                .get_source()
+                .map(|src| Cow::Owned(String::from(get_until_newline(src, begin))))
         }
     }
 
@@ -2051,13 +2052,13 @@ pub type FileLinesResult = Result<FileLines, SpanLinesError>;
 
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum SpanLinesError {
-    DistinctSources(DistinctSources),
+    DistinctSources(Box<DistinctSources>),
 }
 
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum SpanSnippetError {
     IllFormedSpan(Span),
-    DistinctSources(DistinctSources),
+    DistinctSources(Box<DistinctSources>),
     MalformedForSourcemap(MalformedSourceMapPositions),
     SourceNotAvailable { filename: FileName },
 }
@@ -2159,9 +2160,7 @@ where
         };
 
         Hash::hash(&TAG_VALID_SPAN, hasher);
-        // We truncate the stable ID hash and line and column numbers. The chances
-        // of causing a collision this way should be minimal.
-        Hash::hash(&(file.name_hash as u64), hasher);
+        Hash::hash(&file.name_hash, hasher);
 
         // Hash both the length and the end location (line/column) of a span. If we
         // hash only the length, for example, then two otherwise equal spans with

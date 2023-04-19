@@ -67,7 +67,7 @@ pub(crate) fn parse_token_trees<'a>(
     match token_trees {
         Ok(stream) if unmatched_delims.is_empty() => Ok(stream),
         _ => {
-            // Return error if there are unmatched delimiters or unclosng delimiters.
+            // Return error if there are unmatched delimiters or unclosed delimiters.
             // We emit delimiter mismatch errors first, then emit the unclosing delimiter mismatch
             // because the delimiter mismatch is more likely to be the root cause of error
 
@@ -223,21 +223,16 @@ impl<'a> StringReader<'a> {
                     };
                     token::Literal(token::Lit { kind, symbol, suffix })
                 }
-                rustc_lexer::TokenKind::Lifetime { starts_with_number, contains_emoji } => {
+                rustc_lexer::TokenKind::Lifetime { starts_with_number } => {
                     // Include the leading `'` in the real identifier, for macro
                     // expansion purposes. See #12512 for the gory details of why
                     // this is necessary.
                     let lifetime_name = self.str_from(start);
                     if starts_with_number {
                         let span = self.mk_sp(start, self.pos);
-                        let mut diag = self.sess.struct_err("lifetimes or labels cannot start with a number");
+                        let mut diag = self.sess.struct_err("lifetimes cannot start with a number");
                         diag.set_span(span);
                         diag.stash(span, StashKey::LifetimeIsChar);
-                    } else if contains_emoji {
-                        let span = self.mk_sp(start, self.pos);
-                        let mut diag = self.sess.struct_err("lifetimes or labels cannot contain emojis");
-                        diag.set_span(span);
-                        diag.stash(span, StashKey::LifetimeContainsEmoji);
                     }
                     let ident = Symbol::intern(lifetime_name);
                     token::Lifetime(ident)
@@ -558,8 +553,8 @@ impl<'a> StringReader<'a> {
         }
 
         if let Some(possible_offset) = possible_offset {
-            let lo = start + BytePos(possible_offset as u32);
-            let hi = lo + BytePos(found_terminators as u32);
+            let lo = start + BytePos(possible_offset);
+            let hi = lo + BytePos(found_terminators);
             let span = self.mk_sp(lo, hi);
             err.span_suggestion(
                 span,

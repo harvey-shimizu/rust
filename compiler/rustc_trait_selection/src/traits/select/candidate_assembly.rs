@@ -97,7 +97,7 @@ impl<'cx, 'tcx> SelectionContext<'cx, 'tcx> {
             } else if lang_items.tuple_trait() == Some(def_id) {
                 self.assemble_candidate_for_tuple(obligation, &mut candidates);
             } else if lang_items.pointer_like() == Some(def_id) {
-                self.assemble_candidate_for_ptr_sized(obligation, &mut candidates);
+                self.assemble_candidate_for_pointer_like(obligation, &mut candidates);
             } else if lang_items.fn_ptr_trait() == Some(def_id) {
                 self.assemble_candidates_for_fn_ptr_trait(obligation, &mut candidates);
             } else {
@@ -294,7 +294,7 @@ impl<'cx, 'tcx> SelectionContext<'cx, 'tcx> {
             return;
         }
 
-        // Keep this funtion in sync with extract_tupled_inputs_and_output_from_callable
+        // Keep this function in sync with extract_tupled_inputs_and_output_from_callable
         // until the old solver (and thus this function) is removed.
 
         // Okay to skip binder because what we are inspecting doesn't involve bound regions.
@@ -406,7 +406,7 @@ impl<'cx, 'tcx> SelectionContext<'cx, 'tcx> {
             }
 
             match obligation.self_ty().skip_binder().kind() {
-                // Fast path to avoid evaluating an obligation that trivally holds.
+                // Fast path to avoid evaluating an obligation that trivially holds.
                 // There may be more bounds, but these are checked by the regular path.
                 ty::FnPtr(..) => return false,
                 // These may potentially implement `FnPtr`
@@ -775,7 +775,7 @@ impl<'cx, 'tcx> SelectionContext<'cx, 'tcx> {
         obligation: &TraitObligation<'tcx>,
         candidates: &mut SelectionCandidateSet<'tcx>,
     ) {
-        if obligation.has_non_region_param() {
+        if obligation.predicate.has_non_region_param() {
             return;
         }
 
@@ -942,15 +942,15 @@ impl<'cx, 'tcx> SelectionContext<'cx, 'tcx> {
         }
     }
 
-    fn assemble_candidate_for_ptr_sized(
+    fn assemble_candidate_for_pointer_like(
         &mut self,
         obligation: &TraitObligation<'tcx>,
         candidates: &mut SelectionCandidateSet<'tcx>,
     ) {
         // The regions of a type don't affect the size of the type
-        let self_ty = self
-            .tcx()
-            .erase_regions(self.tcx().erase_late_bound_regions(obligation.predicate.self_ty()));
+        let tcx = self.tcx();
+        let self_ty =
+            tcx.erase_regions(tcx.erase_late_bound_regions(obligation.predicate.self_ty()));
 
         // But if there are inference variables, we have to wait until it's resolved.
         if self_ty.has_non_region_infer() {
@@ -958,9 +958,8 @@ impl<'cx, 'tcx> SelectionContext<'cx, 'tcx> {
             return;
         }
 
-        if let Ok(layout) = self.tcx().layout_of(obligation.param_env.and(self_ty))
-            && layout.layout.size() == self.tcx().data_layout.pointer_size
-            && layout.layout.align().abi == self.tcx().data_layout.pointer_align.abi
+        if let Ok(layout) = tcx.layout_of(obligation.param_env.and(self_ty))
+            && layout.layout.is_pointer_like(&tcx.data_layout)
         {
             candidates.vec.push(BuiltinCandidate { has_nested: false });
         }

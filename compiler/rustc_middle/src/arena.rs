@@ -114,11 +114,16 @@ macro_rules! arena_types {
 
             [] dep_kind: rustc_middle::dep_graph::DepKindStruct<'tcx>,
 
-            [decode] trait_impl_trait_tys: rustc_data_structures::fx::FxHashMap<rustc_hir::def_id::DefId, rustc_middle::ty::Ty<'tcx>>,
+            [decode] trait_impl_trait_tys:
+                rustc_data_structures::fx::FxHashMap<
+                    rustc_hir::def_id::DefId,
+                    rustc_middle::ty::EarlyBinder<rustc_middle::ty::Ty<'tcx>>
+                >,
             [] bit_set_u32: rustc_index::bit_set::BitSet<u32>,
             [] external_constraints: rustc_middle::traits::solve::ExternalConstraintsData<'tcx>,
             [decode] doc_link_resolutions: rustc_hir::def::DocLinkResMap,
             [] closure_kind_origin: (rustc_span::Span, rustc_middle::hir::place::Place<'tcx>),
+            [] mod_child: rustc_middle::metadata::ModChild,
         ]);
     )
 }

@@ -663,15 +663,17 @@ impl<'a, 'tcx> Resolver<'a, 'tcx> {
                         Ident::with_dummy_span(name),
                         Namespace::ValueNS,
                         &parent_scope,
-                        &|res: Res| match res {
-                            Res::Def(
-                                DefKind::Ctor(CtorOf::Variant, CtorKind::Const)
-                                | DefKind::Ctor(CtorOf::Struct, CtorKind::Const)
-                                | DefKind::Const
-                                | DefKind::AssocConst,
-                                _,
-                            ) => true,
-                            _ => false,
+                        &|res: Res| {
+                            matches!(
+                                res,
+                                Res::Def(
+                                    DefKind::Ctor(CtorOf::Variant, CtorKind::Const)
+                                        | DefKind::Ctor(CtorOf::Struct, CtorKind::Const)
+                                        | DefKind::Const
+                                        | DefKind::AssocConst,
+                                    _,
+                                )
+                            )
                         },
                     );
 
@@ -1607,7 +1609,17 @@ impl<'a, 'tcx> Resolver<'a, 'tcx> {
         let mut err =
             struct_span_err!(self.tcx.sess, ident.span, E0603, "{} `{}` is private", descr, ident);
         err.span_label(ident.span, &format!("private {}", descr));
-        if let Some(span) = ctor_fields_span {
+
+        let mut non_exhaustive = None;
+        // If an ADT is foreign and marked as `non_exhaustive`, then that's
+        // probably why we have the privacy error.
+        // Otherwise, point out if the struct has any private fields.
+        if let Some(def_id) = res.opt_def_id()
+            && !def_id.is_local()
+            && let Some(attr) = self.tcx.get_attr(def_id, sym::non_exhaustive)
+        {
+            non_exhaustive = Some(attr.span);
+        } else if let Some(span) = ctor_fields_span {
             err.span_label(span, "a constructor is private if any of the fields is private");
             if let Res::Def(_, d) = res && let Some(fields) = self.field_visibility_spans.get(&d) {
                 err.multipart_suggestion_verbose(
@@ -1655,6 +1667,14 @@ impl<'a, 'tcx> Resolver<'a, 'tcx> {
             let mut note_span = MultiSpan::from_span(def_span);
             if !first && binding.vis.is_public() {
                 note_span.push_span_label(def_span, "consider importing it directly");
+            }
+            // Final step in the import chain, point out if the ADT is `non_exhaustive`
+            // which is probably why this privacy violation occurred.
+            if next_binding.is_none() && let Some(span) = non_exhaustive {
+                note_span.push_span_label(
+                    span,
+                    format!("cannot be constructed because it is `#[non_exhaustive]`"),
+                );
             }
             err.span_note(note_span, &msg);
         }
@@ -1849,15 +1869,13 @@ impl<'a, 'tcx> Resolver<'a, 'tcx> {
                 Some(LexicalScopeBinding::Item(name_binding)) => Some(name_binding.span),
                 _ => None,
             };
-            let suggestion = if let Some(span) = match_span {
-                Some((
+            let suggestion = match_span.map(|span| {
+                (
                     vec![(span, String::from(""))],
                     format!("`{}` is defined here, but is not a type", ident),
                     Applicability::MaybeIncorrect,
-                ))
-            } else {
-                None
-            };
+                )
+            });
 
             (format!("use of undeclared type `{}`", ident), suggestion)
         } else {

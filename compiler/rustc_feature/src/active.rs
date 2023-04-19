@@ -309,7 +309,7 @@ declare_features! (
     (active, associated_type_defaults, "1.2.0", Some(29661), None),
     /// Allows `async || body` closures.
     (active, async_closure, "1.37.0", Some(62290), None),
-    /// Alows async functions to be declared, implemented, and used in traits.
+    /// Allows async functions to be declared, implemented, and used in traits.
     (incomplete, async_fn_in_trait, "1.66.0", Some(91611), None),
     /// Allows `extern "C-unwind" fn` to enable unwinding across ABI boundaries.
     (active, c_unwind, "1.52.0", Some(74990), None),
@@ -416,6 +416,8 @@ declare_features! (
     (active, half_open_range_patterns_in_slices, "1.66.0", Some(67264), None),
     /// Allows `if let` guard in match arms.
     (active, if_let_guard, "1.47.0", Some(51114), None),
+    /// Allows `impl Trait` to be used inside associated types (RFC 2515).
+    (active, impl_trait_in_assoc_type, "CURRENT_RUSTC_VERSION", Some(63063), None),
     /// Allows `impl Trait` as output type in `Fn` traits in return position of functions.
     (active, impl_trait_in_fn_trait_return, "1.64.0", Some(99697), None),
     /// Allows referencing `Self` and projections in impl-trait.
@@ -518,6 +520,8 @@ declare_features! (
     /// Allows dyn upcasting trait objects via supertraits.
     /// Dyn upcasting is casting, e.g., `dyn Foo -> dyn Bar` where `Foo: Bar`.
     (active, trait_upcasting, "1.56.0", Some(65991), None),
+    /// Allows for transmuting between arrays with sizes that contain generic consts.
+    (active, transmute_generic_consts, "CURRENT_RUSTC_VERSION", Some(109929), None),
     /// Allows #[repr(transparent)] on unions (RFC 2645).
     (active, transparent_unions, "1.37.0", Some(60405), None),
     /// Allows inconsistent bounds in where clauses.

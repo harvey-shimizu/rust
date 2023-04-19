@@ -89,7 +89,7 @@ impl<'tcx> Partitioner<'tcx> for DefaultPartitioning {
         }
 
         PreInliningPartitioning {
-            codegen_units: codegen_units.into_values().map(|codegen_unit| codegen_unit).collect(),
+            codegen_units: codegen_units.into_values().collect(),
             roots,
             internalization_candidates,
         }
@@ -424,7 +424,7 @@ fn mono_item_visibility<'tcx>(
         InstanceDef::Item(def) => def.did,
         InstanceDef::DropGlue(def_id, Some(_)) => def_id,
 
-        // We match the visiblity of statics here
+        // We match the visibility of statics here
         InstanceDef::ThreadLocalShim(def_id) => {
             return static_visibility(tcx, can_be_internalized, def_id);
         }

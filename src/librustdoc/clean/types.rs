@@ -1,6 +1,5 @@
 use std::borrow::Cow;
 use std::cell::RefCell;
-use std::default::Default;
 use std::hash::Hash;
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -157,7 +156,7 @@ impl ExternalCrate {
     }
 
     /// Attempts to find where an external crate is located, given that we're
-    /// rendering in to the specified source destination.
+    /// rendering into the specified source destination.
     pub(crate) fn location(
         &self,
         extern_url: Option<&str>,
@@ -687,7 +686,7 @@ impl Item {
                 return None;
             }
             // Variants always inherit visibility
-            VariantItem(..) => return None,
+            VariantItem(..) | ImplItem(..) => return None,
             // Trait items inherit the trait's visibility
             AssocConstItem(..) | TyAssocConstItem(..) | AssocTypeItem(..) | TyAssocTypeItem(..)
             | TyMethodItem(..) | MethodItem(..) => {
@@ -752,7 +751,7 @@ pub(crate) enum ItemKind {
     PrimitiveItem(PrimitiveType),
     /// A required associated constant in a trait declaration.
     TyAssocConstItem(Type),
-    /// An associated associated constant in a trait impl or a provided one in a trait declaration.
+    /// An associated constant in a trait impl or a provided one in a trait declaration.
     AssocConstItem(Type, ConstantKind),
     /// A required associated type in a trait declaration.
     ///
@@ -980,7 +979,7 @@ pub(crate) trait NestedAttributesExt {
     /// Returns `true` if the attribute list contains a specific `word`
     fn has_word(self, word: Symbol) -> bool
     where
-        Self: std::marker::Sized,
+        Self: Sized,
     {
         <Self as NestedAttributesExt>::get_word_attr(self, word).is_some()
     }
@@ -2019,7 +2018,7 @@ impl Variant {
 
 #[derive(Clone, Debug)]
 pub(crate) struct Discriminant {
-    // In the case of cross crate re-exports, we don't have the nessesary information
+    // In the case of cross crate re-exports, we don't have the necessary information
     // to reconstruct the expression of the discriminant, only the value.
     pub(super) expr: Option<BodyId>,
     pub(super) value: DefId,
@@ -2306,7 +2305,7 @@ impl Impl {
 pub(crate) enum ImplKind {
     Normal,
     Auto,
-    FakeVaradic,
+    FakeVariadic,
     Blanket(Box<Type>),
 }
 
@@ -2320,7 +2319,7 @@ impl ImplKind {
     }
 
     pub(crate) fn is_fake_variadic(&self) -> bool {
-        matches!(self, ImplKind::FakeVaradic)
+        matches!(self, ImplKind::FakeVariadic)
     }
 
     pub(crate) fn as_blanket_ty(&self) -> Option<&Type> {

@@ -15,7 +15,7 @@ use rustc_infer::infer::opaque_types::ConstrainOpaqueTypeRegionVisitor;
 use rustc_infer::infer::outlives::env::OutlivesEnvironment;
 use rustc_infer::infer::{DefiningAnchor, RegionVariableOrigin, TyCtxtInferExt};
 use rustc_infer::traits::{Obligation, TraitEngineExt as _};
-use rustc_lint::builtin::REPR_TRANSPARENT_EXTERNAL_PRIVATE_FIELDS;
+use rustc_lint_defs::builtin::REPR_TRANSPARENT_EXTERNAL_PRIVATE_FIELDS;
 use rustc_middle::hir::nested_filter;
 use rustc_middle::middle::stability::EvalResult;
 use rustc_middle::ty::layout::{LayoutError, MAX_SIMD_LANES};
@@ -452,11 +452,8 @@ fn check_opaque_meets_bounds<'tcx>(
         hir::OpaqueTyOrigin::FnReturn(..) | hir::OpaqueTyOrigin::AsyncFn(..) => {}
         // Can have different predicates to their defining use
         hir::OpaqueTyOrigin::TyAlias => {
-            let outlives_environment = OutlivesEnvironment::new(param_env);
-            let _ = infcx.err_ctxt().check_region_obligations_and_report_errors(
-                defining_use_anchor,
-                &outlives_environment,
-            );
+            let outlives_env = OutlivesEnvironment::new(param_env);
+            let _ = ocx.resolve_regions_and_report_errors(defining_use_anchor, &outlives_env);
         }
     }
     // Clean up after ourselves

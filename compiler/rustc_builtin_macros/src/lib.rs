@@ -7,9 +7,9 @@
 #![feature(box_patterns)]
 #![feature(decl_macro)]
 #![feature(if_let_guard)]
-#![feature(is_some_and)]
 #![feature(is_sorted)]
 #![feature(let_chains)]
+#![feature(lint_reasons)]
 #![feature(proc_macro_internals)]
 #![feature(proc_macro_quote)]
 #![recursion_limit = "256"]
@@ -24,7 +24,7 @@ use crate::deriving::*;
 use rustc_errors::{DiagnosticMessage, SubdiagnosticMessage};
 use rustc_expand::base::{MacroExpanderFn, ResolverExpand, SyntaxExtensionKind};
 use rustc_expand::proc_macro::BangProcMacro;
-use rustc_macros::fluent_messages;
+use rustc_fluent_macro::fluent_messages;
 use rustc_span::symbol::sym;
 
 mod alloc_error_handler;
@@ -40,6 +40,7 @@ mod derive;
 mod deriving;
 mod edition_panic;
 mod env;
+mod errors;
 mod format;
 mod format_foreign;
 mod global_allocator;

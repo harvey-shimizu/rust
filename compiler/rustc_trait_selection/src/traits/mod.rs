@@ -58,10 +58,7 @@ pub use self::specialize::{specialization_graph, translate_substs, OverlapError}
 pub use self::structural_match::{
     search_for_adt_const_param_violation, search_for_structural_match_violation,
 };
-pub use self::util::{
-    elaborate_obligations, elaborate_predicates, elaborate_predicates_with_span,
-    elaborate_trait_ref, elaborate_trait_refs,
-};
+pub use self::util::elaborate;
 pub use self::util::{expand_trait_aliases, TraitAliasExpander};
 pub use self::util::{get_vtable_index_of_object_method, impl_item_is_final, upcast_choices};
 pub use self::util::{
@@ -206,7 +203,7 @@ fn do_normalize_predicates<'tcx>(
         }
     };
 
-    debug!("do_normalize_predictes: normalized predicates = {:?}", predicates);
+    debug!("do_normalize_predicates: normalized predicates = {:?}", predicates);
 
     // We can use the `elaborated_env` here; the region code only
     // cares about declarations like `'a: 'b`.
@@ -267,7 +264,7 @@ pub fn normalize_param_env_or_error<'tcx>(
     // and errors will get reported then; so outside of type inference we
     // can be sure that no errors should occur.
     let mut predicates: Vec<_> =
-        util::elaborate_predicates(tcx, unnormalized_env.caller_bounds().into_iter()).collect();
+        util::elaborate(tcx, unnormalized_env.caller_bounds().into_iter()).collect();
 
     debug!("normalize_param_env_or_error: elaborated-predicates={:?}", predicates);
 
@@ -453,7 +450,7 @@ fn is_impossible_method(tcx: TyCtxt<'_>, (impl_def_id, trait_item_def_id): (DefI
             {
                 return ControlFlow::Break(());
             }
-            r.super_visit_with(self)
+            ControlFlow::Continue(())
         }
         fn visit_const(&mut self, ct: ty::Const<'tcx>) -> ControlFlow<Self::BreakTy> {
             if let ty::ConstKind::Param(param) = ct.kind()

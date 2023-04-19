@@ -1333,7 +1333,7 @@ impl<'a, 'tcx> BoundVarContext<'a, 'tcx> {
 
         // We may fail to resolve higher-ranked lifetimes that are mentioned by APIT.
         // AST-based resolution does not care for impl-trait desugaring, which are the
-        // responibility of lowering. This may create a mismatch between the resolution
+        // responsibility of lowering. This may create a mismatch between the resolution
         // AST found (`region_def_id`) which points to HRTB, and what HIR allows.
         // ```
         // fn foo(x: impl for<'a> Trait<'a, Assoc = impl Copy + 'a>) {}
@@ -1749,8 +1749,7 @@ impl<'a, 'tcx> BoundVarContext<'a, 'tcx> {
             if trait_defines_associated_type_named(def_id) {
                 break Some(bound_vars.into_iter().collect());
             }
-            let predicates =
-                tcx.super_predicates_that_define_assoc_type((def_id, Some(assoc_name)));
+            let predicates = tcx.super_predicates_that_define_assoc_type((def_id, assoc_name));
             let obligations = predicates.predicates.iter().filter_map(|&(pred, _)| {
                 let bound_predicate = pred.kind();
                 match bound_predicate.skip_binder() {
